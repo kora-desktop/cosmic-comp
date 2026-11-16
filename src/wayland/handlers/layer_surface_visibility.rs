@@ -82,6 +82,22 @@ impl State {
             }
         }
 
+        // Shown again, an output-agnostic surface (a toast, a notification) goes on top
+        // of its layer, as when first mapped, rather than under overlays mapped since.
+        if !hidden && is_agnostic {
+            let raised = shell.outputs().find_map(|o| {
+                let mut map = layer_map_for_output(o);
+                let layer = map
+                    .layers()
+                    .find(|l| l.wl_surface().id() == surface_id)
+                    .cloned()?;
+                crate::shell::raise_layer(&mut map, &layer).then(|| o.clone())
+            });
+            if let Some(output) = raised {
+                self.backend.schedule_render(&output);
+            }
+        }
+
         // Update layer blur cache for all outputs that have this surface.
         // When hiding, this removes the surface from blur processing.
         // When showing, it re-adds it.

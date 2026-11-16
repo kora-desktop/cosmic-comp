@@ -12784,5 +12784,23 @@ fn bottom_pin_deficit(anchor: Anchor, arranged_height: i32, buffer_height: i32) 
     arranged_height - buffer_height
 }
 
+/// Put `layer` above the others on its layer, as mapping it fresh would; true
+/// when it moved. Remapping keeps a held size; a reserve cap is only for panels.
+pub(crate) fn raise_layer(map: &mut smithay::desktop::LayerMap, layer: &LayerSurface) -> bool {
+    if !map.layers().any(|l| l == layer) || map.layers_on(layer.layer()).next_back() == Some(layer)
+    {
+        return false;
+    }
+    let held = map.is_held(layer);
+    map.unmap_layer(layer);
+    if map.map_layer(layer).is_err() {
+        return false;
+    }
+    if held {
+        map.hold_size(layer, true);
+    }
+    true
+}
+
 #[cfg(test)]
 mod bottom_pin_tests;
