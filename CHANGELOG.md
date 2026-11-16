@@ -1,3 +1,10 @@
+## [2.0.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.0.0...v2.0.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** move to icetron-p with the held-key fixes ([ae98996](https://github.com/kora-desktop/cosmic-comp/commit/ae9899636df4c1df9010bb7cb0a3928137907348))
+
 # [2.0.0](https://github.com/kora-desktop/cosmic-comp/compare/v1.69.2...v2.0.0) (2026-11-12)
 
 
