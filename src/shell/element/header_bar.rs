@@ -178,7 +178,7 @@ pub fn uses_integrated_header(theme: &CompTheme) -> bool {
     theme.window_header_style() == WindowHeaderStyle::Integrated
 }
 
-/// Whether the shell owns the window's commands: the palette, Super+K and the app's request.
+/// Whether the shell owns the window's commands: the palette, Super+Shift+K and the app's request.
 pub fn uses_shell_palette(theme: &CompTheme) -> bool {
     theme.window_header_style().shell_owned()
 }

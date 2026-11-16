@@ -1286,6 +1286,8 @@ impl State {
             }
 
             // Do nothing
+            // Routed to the focused app before it gets here; see `filter_keyboard_input`.
+            Action::App(_) => (),
             Action::Disable => (),
         }
     }

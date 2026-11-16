@@ -10,10 +10,11 @@
     (modifiers: [Super, Ctrl], key: "Right"): Focus(Right),
     (modifiers: [Super, Ctrl], key: "Up"): Focus(Up),
     (modifiers: [Super, Ctrl], key: "Down"): Focus(Down),
-    (modifiers: [Super], key: "h"): Focus(Left),
+    // Super+H minimizes, as the design's contract has it; Focus Left keeps Super+Ctrl+Left.
     (modifiers: [Super], key: "j"): Focus(Down),
-    // Super+K: the window's palette in Halo themes, focus up in bar themes.
-    (modifiers: [Super], key: "k"): WindowCommands,
+    // Super+Shift+K: the window's palette in Halo themes, focus up in bar themes.
+    // Super+K went to Chord, as the design's contract has it.
+    (modifiers: [Super, Shift], key: "k"): WindowCommands,
     (modifiers: [Super, Shift], key: "m"): MoveToDesktop,
     (modifiers: [Super], key: "F10"): FocusHalo,
     // Held: dictate into the focused text field.
@@ -26,7 +27,6 @@
     (modifiers: [Super, Shift], key: "Down"): Move(Down),
     (modifiers: [Super, Shift], key: "h"): Move(Left),
     (modifiers: [Super, Shift], key: "j"): Move(Down),
-    (modifiers: [Super, Shift], key: "k"): Move(Up),
     (modifiers: [Super, Shift], key: "l"): Move(Right),
 
     (modifiers: [Super], key: "1"): Workspace(1),
@@ -51,21 +51,23 @@
     (modifiers: [Super, Alt], key: "9"): MoveToWorkspace(9),
     (modifiers: [Super, Alt], key: "0"): MoveToLastWorkspace,
 
-    // Two axes, one modifier: Super+Left/Right move between desktops, Super+Up/Down
-    // between workspaces; the tiling focus moves live under Super+Ctrl instead.
-    // The realm bindings do nothing unless a workspace registry is running.
+    // Two axes on Control, as on a Mac: Ctrl+Left/Right move between desktops,
+    // Ctrl+Up/Down between workspaces, and Shift takes the window along. Editing
+    // lives on Super, which is what leaves Control free. The realm bindings pass
+    // through unless a workspace registry is running.
+    (modifiers: [Ctrl], key: "Left"): PreviousWorkspace,
+    (modifiers: [Ctrl], key: "Right"): NextWorkspace,
+    (modifiers: [Ctrl], key: "Up"): PreviousRealm,
+    (modifiers: [Ctrl], key: "Down"): NextRealm,
+    (modifiers: [Ctrl, Shift], key: "Left"): MoveToPreviousWorkspace,
+    (modifiers: [Ctrl, Shift], key: "Right"): MoveToNextWorkspace,
+    // Super+Left/Right keep the desktops; Super+Up is Maximize, so Super+Down went with it.
     (modifiers: [Super], key: "Left"): PreviousWorkspace,
     (modifiers: [Super], key: "Right"): NextWorkspace,
     (modifiers: [Super, Ctrl], key: "h"): PreviousWorkspace,
     (modifiers: [Super, Ctrl], key: "l"): NextWorkspace,
-    (modifiers: [Super], key: "Up"): PreviousRealm,
-    (modifiers: [Super], key: "Down"): NextRealm,
     (modifiers: [Super, Ctrl], key: "k"): PreviousRealm,
     (modifiers: [Super, Ctrl], key: "j"): NextRealm,
-    // Super+Tab duplicated Alt+Tab exactly, so it costs nothing to give it the
-    // axis instead — and Tab-to-switch matches what the gesture means elsewhere.
-    (modifiers: [Super], key: "Tab"): NextRealm,
-    (modifiers: [Super, Shift], key: "Tab"): PreviousRealm,
     (modifiers: [Super, Shift, Ctrl], key: "Left"): MoveToPreviousWorkspace,
     (modifiers: [Super, Shift, Ctrl], key: "Down"): MoveToNextWorkspace,
     (modifiers: [Super, Shift, Ctrl], key: "Up"): MoveToPreviousWorkspace,
@@ -98,7 +100,10 @@
     (modifiers: [Super], key: "g"): ToggleWindowFloating,
     (modifiers: [Super, Shift], key: "x"): SwapWindow,
 
+    (modifiers: [Super], key: "Up"): Maximize,
     (modifiers: [Super], key: "m"): Maximize,
+    (modifiers: [Super], key: "h"): Minimize,
+    (modifiers: [Super], key: "Return"): Fullscreen,
     (modifiers: [Super], key: "F11"): Fullscreen,
     (modifiers: [Super], key: "r"): Resizing(Outwards),
     (modifiers: [Super, Shift], key: "r"): Resizing(Inwards),
@@ -110,18 +115,29 @@
     (modifiers: [Super], key: "comma"): ZoomOut,
 
     (modifiers: [Super], key: "b"): System(WebBrowser),
+    (modifiers: [Super], key: "e"): System(HomeFolder),
     (modifiers: [Super], key: "f"): System(HomeFolder),
     (modifiers: [Super], key: "space"): System(Spotlight),
     (modifiers: [Super, Shift], key: "space"): System(InputSourceSwitch),
-    (modifiers: [Super], key: "t"): System(Terminal),
+    // Super+T is the app's New tab now; the terminal takes the chord Linux desktops use.
+    (modifiers: [Ctrl, Alt], key: "t"): System(Terminal),
 
     (modifiers: [Super]): System(AppLibrary),
-    (modifiers: [Super], key: "c"): System(ChatPanel),
+    (modifiers: [Super], key: "k"): System(ChatPanel),
     (modifiers: [Super], key: "w"): System(WorkspaceOverview),
     (modifiers: [Super], key: "slash"): System(Launcher),
-    (modifiers: [Super], key: "x"): System(StartMenu),
-    (modifiers: [Alt], key: "Tab"): System(WindowSwitcher),
-    (modifiers: [Alt, Shift], key: "Tab"): System(WindowSwitcherPrevious),
+    // Super+X is Cut; the start menu keeps its letter under Alt.
+    (modifiers: [Super, Alt], key: "x"): System(StartMenu),
+    // Super+Tab switches between all windows, Alt+Tab within the focused app.
+    (modifiers: [Super], key: "Tab"): System(WindowSwitcher),
+    (modifiers: [Super, Shift], key: "Tab"): System(WindowSwitcherPrevious),
+    (modifiers: [Alt], key: "Tab"): System(WindowSwitcherApp),
+    (modifiers: [Alt, Shift], key: "Tab"): System(WindowSwitcherAppPrevious),
+
+    // The app's own commands: the compositor passes these chords to the focused
+    // app, which decides what they mean.
+    (modifiers: [Super], key: "n"): App(NewWindow),
+    (modifiers: [Super], key: "t"): App(NewTab),
 
     (modifiers: [Super], key: "p"): System(DisplayToggle),
     (modifiers: [Super], key: "i"): System(Settings),
@@ -136,6 +152,7 @@
     (modifiers: [Super, Shift], key: "5"): CaptureToolbar,
     (modifiers: [Super, Shift], key: "6"): PickColor,
     (modifiers: [], key: "Print"): CaptureToolbar,
+    (modifiers: [Super, Shift], key: "s"): CaptureToolbar,
     (modifiers: [Super], key: "F23"): CaptureToolbar,
     (modifiers: [Super, Shift], key: "F23"): CaptureToolbar,
     (modifiers: [], key: "XF86AudioRaiseVolume"): System(VolumeRaise),

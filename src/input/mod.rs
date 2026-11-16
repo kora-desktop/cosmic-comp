@@ -2821,6 +2821,11 @@ impl State {
                     continue;
                 }
 
+                // The app's own commands belong to the app: route the chord to it.
+                if matches!(action, shortcuts::Action::App(_)) {
+                    continue;
+                }
+
                 // Likewise Speech to Text, while no dictation host is listening.
                 if self.common.speech_to_text.passes_through(action) {
                     continue;

@@ -2248,7 +2248,7 @@ fn dialog_key(sym: Keysym) -> Option<Message> {
     }
 }
 
-/// Close an open palette from outside it (Super+K pressed again).
+/// Close an open palette from outside it (its chord, Super+Shift+K, pressed again).
 pub(crate) fn close_palette(seat: &Seat<State>, state: &mut State) {
     let palette = seat
         .get_keyboard()

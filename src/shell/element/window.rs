@@ -1246,7 +1246,7 @@ impl CosmicWindow {
             .with_program(|p| p.commands_open.load(Ordering::SeqCst))
     }
 
-    /// Super+K: open the palette under the pill, or close it if it is up.
+    /// Super+Shift+K: open the palette under the pill, or close it if it is up.
     pub fn toggle_commands(&self, seat: &Seat<State>, loop_handle: &LoopHandle<'static, State>) {
         if !self.0.with_program(|p| p.uses_shell_palette()) {
             return;

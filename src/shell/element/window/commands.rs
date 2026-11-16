@@ -410,7 +410,7 @@ pub fn chat_command(base: &str, query: &str) -> String {
     }
 }
 
-/// Ask Chat: the `ChatPanel` system action — the one Super+C is bound to —
+/// Ask Chat: the `ChatPanel` system action — the one Super+K is bound to —
 /// run with the palette's query as its argument.
 pub fn open_chat(state: &mut State, query: &str) {
     let Some(base) = state

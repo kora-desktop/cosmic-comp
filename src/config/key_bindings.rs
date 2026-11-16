@@ -85,20 +85,22 @@ mod tests {
         }
     }
 
-    /// Super and an arrow moves between desktops and workspaces; the tiling
-    /// focus lives under Super+Ctrl.
+    /// Control and an arrow moves between desktops and workspaces, Super+Left/Right
+    /// keep the desktops, and the tiling focus lives under Super+Ctrl.
     #[test]
-    fn super_arrows_move_between_desktops_and_workspaces() {
+    fn arrows_move_between_desktops_and_workspaces() {
         use std::str::FromStr;
 
         let ron = include_str!("../../data/keybindings.ron");
         let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
 
         for (combo, want) in [
+            ("Ctrl+Left", shortcuts::Action::PreviousWorkspace),
+            ("Ctrl+Right", shortcuts::Action::NextWorkspace),
+            ("Ctrl+Up", shortcuts::Action::PreviousRealm),
+            ("Ctrl+Down", shortcuts::Action::NextRealm),
             ("Super+Left", shortcuts::Action::PreviousWorkspace),
             ("Super+Right", shortcuts::Action::NextWorkspace),
-            ("Super+Up", shortcuts::Action::PreviousRealm),
-            ("Super+Down", shortcuts::Action::NextRealm),
             (
                 "Super+Ctrl+Left",
                 shortcuts::Action::Focus(shortcuts::action::FocusDirection::Left),
@@ -110,14 +112,14 @@ mod tests {
     }
 
     #[test]
-    fn super_k_opens_the_window_palette() {
+    fn super_shift_k_opens_the_window_palette() {
         use std::str::FromStr;
 
         let ron = include_str!("../../data/keybindings.ron");
         let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
 
         for (combo, want) in [
-            ("Super+k", shortcuts::Action::WindowCommands),
+            ("Super+Shift+k", shortcuts::Action::WindowCommands),
             ("Super+Shift+m", shortcuts::Action::MoveToDesktop),
             ("Super+F10", shortcuts::Action::FocusHalo),
             ("Ctrl+space", shortcuts::Action::SpeechToText),
@@ -182,25 +184,27 @@ mod tests {
         );
     }
 
-    /// Super+Tab is the workspace switch, not a second Alt+Tab.
+    /// Super+Tab switches between all windows, Alt+Tab within the focused app.
     #[test]
-    fn super_tab_switches_workspaces() {
+    fn super_tab_switches_windows_and_alt_tab_stays_in_the_app() {
+        use shortcuts::action::System;
         use std::str::FromStr;
 
         let ron = include_str!("../../data/keybindings.ron");
         let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
 
         for (combo, want) in [
-            ("Super+Tab", shortcuts::Action::NextRealm),
-            ("Super+Shift+Tab", shortcuts::Action::PreviousRealm),
-            // Alt keeps the window switcher.
-            (
-                "Alt+Tab",
-                shortcuts::Action::System(shortcuts::action::System::WindowSwitcher),
-            ),
+            ("Super+Tab", System::WindowSwitcher),
+            ("Super+Shift+Tab", System::WindowSwitcherPrevious),
+            ("Alt+Tab", System::WindowSwitcherApp),
+            ("Alt+Shift+Tab", System::WindowSwitcherAppPrevious),
         ] {
             let binding = shortcuts::Binding::from_str(combo).unwrap();
-            assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");
+            assert_eq!(
+                shortcuts.0.get(&binding),
+                Some(&shortcuts::Action::System(want)),
+                "{combo}"
+            );
         }
     }
 }
