@@ -338,9 +338,14 @@ impl MoveGrabState {
             );
         }
 
+        let room = if matches!(self.snapping_zone, Some(SnappingZone::Maximize)) {
+            self.window.maximized_room()
+        } else {
+            self.window.window_room()
+        };
         let non_exclusive_geometry = crate::shell::layout::floating::window_zone(
             layer_map_for_output(output).non_exclusive_zone(),
-            self.window.window_room(),
+            room,
         );
 
         let gaps = (theme.gaps.0 as i32, theme.gaps.1 as i32);

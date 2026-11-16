@@ -699,7 +699,7 @@ impl ResizeSurfaceGrab {
 
         let zone = crate::shell::layout::floating::window_zone(
             layer_map_for_output(&self.output).non_exclusive_zone(),
-            self.window.window_room(),
+            self.window.maximized_room(),
         )
         .as_local();
 

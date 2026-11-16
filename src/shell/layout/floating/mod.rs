@@ -826,7 +826,7 @@ impl FloatingLayout {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let target_geometry =
-            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
+            window_zone(layers.non_exclusive_zone(), mapped.maximized_room()).as_local();
 
         mapped.set_bounds(target_geometry.size.as_logical());
         mapped.set_tiled(true);
@@ -885,7 +885,7 @@ impl FloatingLayout {
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
         let target_geometry =
-            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
+            window_zone(layers.non_exclusive_zone(), mapped.maximized_room()).as_local();
 
         mapped.set_bounds(target_geometry.size.as_logical());
 
@@ -991,7 +991,7 @@ impl FloatingLayout {
         // size and may be stale if the client hasn't resized to the zone yet.
         let current_geo = if let Some(output) = self.space.outputs().next() {
             let layers = layer_map_for_output(output);
-            window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local()
+            window_zone(layers.non_exclusive_zone(), mapped.maximized_room()).as_local()
         } else {
             self.space
                 .element_geometry(&mapped)
@@ -1166,6 +1166,7 @@ impl FloatingLayout {
         let layers = layer_map_for_output(&output);
         let output_geometry = window_zone(layers.non_exclusive_zone(), mapped.window_room());
         mapped.set_bounds(output_geometry.size);
+        let fill = window_zone(layers.non_exclusive_zone(), mapped.maximized_room()).as_local();
         let last_geometry = *mapped.last_geometry.lock().unwrap();
         let min_size = mapped.min_size().unwrap_or((320, 240).into());
 
@@ -1406,10 +1407,10 @@ impl FloatingLayout {
         }
 
         mapped.set_fills_output_zone(
-            position.x == zone.loc.x
-                && position.y == zone.loc.y
-                && win_geo.size.w >= zone.size.w
-                && win_geo.size.h >= zone.size.h,
+            position.x == fill.loc.x
+                && position.y == fill.loc.y
+                && win_geo.size.w >= fill.size.w
+                && win_geo.size.h >= fill.size.h,
         );
         mapped.set_geometry(Rectangle::new(position, win_geo.size).to_global(&output));
         mapped.configure();
@@ -1451,7 +1452,12 @@ impl FloatingLayout {
 
         let output = self.space.outputs().next().unwrap().clone();
         let layers = layer_map_for_output(&output);
-        let geometry = window_zone(layers.non_exclusive_zone(), mapped.window_room()).as_local();
+        let room = if mapped.is_maximized(false) {
+            mapped.maximized_room()
+        } else {
+            mapped.window_room()
+        };
+        let geometry = window_zone(layers.non_exclusive_zone(), room).as_local();
         mapped.set_bounds(geometry.size.as_logical());
         let window_size = mapped.geometry().size;
 
@@ -1500,7 +1506,7 @@ impl FloatingLayout {
                     previous_geometry: if window.is_maximized(false) {
                         let output = self.space.outputs().next().unwrap();
                         let layers = layer_map_for_output(output);
-                        window_zone(layers.non_exclusive_zone(), window.window_room()).as_local()
+                        window_zone(layers.non_exclusive_zone(), window.maximized_room()).as_local()
                     } else {
                         mapped_geometry
                     },
@@ -1586,7 +1592,9 @@ impl FloatingLayout {
             && let Some(output) = self.space.outputs().next()
         {
             let layers = layer_map_for_output(output);
-            return Some(window_zone(layers.non_exclusive_zone(), elem.window_room()).as_local());
+            return Some(
+                window_zone(layers.non_exclusive_zone(), elem.maximized_room()).as_local(),
+            );
         }
         self.space.element_geometry(elem).map(RectExt::as_local)
     }
@@ -2565,7 +2573,12 @@ impl FloatingLayout {
             .collect::<Vec<_>>()
             .into_iter()
         {
-            mapped.set_bounds(window_zone(zone, mapped.window_room()).size.as_logical());
+            let room = if mapped.is_maximized(true) {
+                mapped.maximized_room()
+            } else {
+                mapped.window_room()
+            };
+            mapped.set_bounds(window_zone(zone, room).size.as_logical());
             let resizing = matches!(
                 *mapped.resize_state.lock().unwrap(),
                 Some(ResizeState::Resizing(_))
@@ -2578,7 +2591,7 @@ impl FloatingLayout {
                 continue;
             }
             let prev = self.space.element_geometry(&mapped).map(RectExt::as_local);
-            let geometry = window_zone(zone, mapped.window_room());
+            let geometry = window_zone(zone, room);
 
             let window_geometry = if mapped.is_maximized(true) {
                 self.pre_slide_positions.remove(&mapped);
@@ -2647,12 +2660,13 @@ impl FloatingLayout {
                     resized.push((mapped.clone(), buffer_size, window_geometry.size));
                 }
                 mapped.set_geometry(window_geometry.to_global(&output));
+                let fill = window_zone(zone, mapped.maximized_room());
                 mapped.set_fills_output_zone(
                     !mapped.is_maximized(false)
-                        && window_geometry.loc.x == geometry.loc.x
-                        && window_geometry.loc.y == geometry.loc.y
-                        && window_geometry.size.w >= geometry.size.w
-                        && window_geometry.size.h >= geometry.size.h,
+                        && window_geometry.loc.x == fill.loc.x
+                        && window_geometry.loc.y == fill.loc.y
+                        && window_geometry.size.w >= fill.size.w
+                        && window_geometry.size.h >= fill.size.h,
                 );
                 if defer_this {
                     // Geometry is final, but withhold the configure until the
@@ -3162,7 +3176,7 @@ impl FloatingLayout {
                         if !maximize {
                             let layers = layer_map_for_output(output);
                             let zone =
-                                window_zone(layers.non_exclusive_zone(), mapped.window_room())
+                                window_zone(layers.non_exclusive_zone(), mapped.maximized_room())
                                     .as_local();
                             mapped.set_fills_output_zone(
                                 target_geometry.loc.x == zone.loc.x
@@ -4073,6 +4087,54 @@ mod tests {
             1,
             "never a negative width"
         );
+    }
+
+    #[test]
+    fn maximized_padding_adds_to_the_bar_on_any_edge() {
+        use cosmic_comp_config::MaximizedPadding;
+        let room = |p: MaximizedPadding| Room::around(HALO, p.resolve(10));
+        let px = |n| MaximizedPadding {
+            enabled: true,
+            size: Some(n),
+        };
+        // 1920x1080 less the bar's band: 52px at the bottom, or 64px on the left.
+        let bottom = Rectangle::<i32, Local>::new(at(0, 0), size(1920, 1028));
+        let left = Rectangle::<i32, Local>::new(at(64, 0), size(1856, 1080));
+
+        assert_eq!(
+            window_zone(bottom, room(MaximizedPadding::default())),
+            window_zone(bottom, KORA),
+            "untouched, it is today's theme inset"
+        );
+        assert_eq!(
+            window_zone(bottom, room(px(24))),
+            Rectangle::new(at(24, HALO), size(1872, 1028 - HALO - 24))
+        );
+        assert_eq!(
+            window_zone(left, room(px(24))),
+            Rectangle::new(at(64 + 24, HALO), size(1856 - 48, 1080 - HALO - 24))
+        );
+        assert_eq!(
+            window_zone(bottom, room(px(48))),
+            Rectangle::new(at(48, 48), size(1824, 1028 - 96)),
+            "more space than the Halo needs moves the top too"
+        );
+    }
+
+    #[test]
+    fn maximized_padding_off_meets_the_work_area() {
+        use cosmic_comp_config::MaximizedPadding;
+        let off = MaximizedPadding {
+            enabled: false,
+            size: Some(24),
+        };
+        let left = Rectangle::<i32, Local>::new(at(64, 0), size(1856, 1080));
+        assert_eq!(
+            window_zone(left, Room::around(HALO, off.resolve(10))),
+            Rectangle::new(at(64, HALO), size(1856, 1080 - HALO)),
+            "the Halo keeps its pill's room"
+        );
+        assert_eq!(window_zone(left, Room::around(0, off.resolve(10))), left);
     }
 
     #[test]

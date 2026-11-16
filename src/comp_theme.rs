@@ -42,6 +42,8 @@ pub struct CompTheme {
     pub workspace_accent: Option<Color>,
     /// The user asked for less motion: status marks hold still.
     pub reduced_motion: bool,
+    /// The user's space around maximized windows.
+    pub maximized_padding: cosmic_comp_config::MaximizedPadding,
 }
 
 impl std::fmt::Debug for CompTheme {
@@ -89,7 +91,14 @@ impl CompTheme {
             gaps: (4, 4),
             workspace_accent: None,
             reduced_motion: false,
+            maximized_padding: Default::default(),
         }
+    }
+
+    /// Space around a maximized window, in logical px.
+    pub fn maximized_inset(&self) -> i32 {
+        self.maximized_padding
+            .resolve(self.window_inset().round() as i32)
     }
 
     /// Load the current system theme (brand + color mode from disk).
@@ -487,5 +496,28 @@ mod focus_border_tests {
             assert!((actual - want).abs() < 0.005, "{mixed:?} vs {expected:?}");
         }
         assert!((mixed.a - 0.506).abs() < 0.001);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CompTheme;
+    use cosmic_comp_config::MaximizedPadding;
+
+    #[test]
+    fn maximized_inset_follows_the_setting() {
+        let mut theme = CompTheme::default();
+        assert_eq!(
+            theme.maximized_inset(),
+            theme.window_inset().round() as i32,
+            "untouched, the theme decides"
+        );
+        theme.maximized_padding = MaximizedPadding {
+            enabled: true,
+            size: Some(16),
+        };
+        assert_eq!(theme.maximized_inset(), 16);
+        theme.maximized_padding.enabled = false;
+        assert_eq!(theme.maximized_inset(), 0);
     }
 }

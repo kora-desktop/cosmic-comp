@@ -837,6 +837,7 @@ impl State {
         use crate::display_grants::Class;
         let config = Config::load(&handle);
         let reduced_motion = config.cosmic_conf.reduced_motion;
+        let maximized_padding = config.cosmic_conf.maximized_padding;
         let animated_resize_state = AnimatedResizeState::new::<Self>(dh);
         let app_commands_state = AppCommandsState::new(dh);
         let backdrop_color_state = BackdropColorState::new::<Self>(dh);
@@ -1017,6 +1018,7 @@ impl State {
                 theme: {
                     let mut theme = crate::comp_theme::CompTheme::from_current();
                     theme.reduced_motion = reduced_motion;
+                    theme.maximized_padding = maximized_padding;
                     theme
                 },
 

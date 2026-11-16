@@ -66,6 +66,40 @@ impl Default for AppearanceConfig {
     }
 }
 
+/// Space kept around a maximized window, inside the work area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MaximizedPadding {
+    /// Off: a maximized window meets the work area on every side.
+    pub enabled: bool,
+    /// Logical px; `None` keeps the theme's window inset.
+    pub size: Option<u32>,
+}
+
+impl MaximizedPadding {
+    /// The largest space honoured, so a hand-edited value cannot squeeze a window away.
+    pub const MAX: u32 = 48;
+
+    /// The space in logical px, given the theme's inset for `size: None`.
+    pub fn resolve(self, theme_inset: i32) -> i32 {
+        if !self.enabled {
+            return 0;
+        }
+        self.size
+            .map_or(theme_inset, |size| size.min(Self::MAX) as i32)
+            .max(0)
+    }
+}
+
+impl Default for MaximizedPadding {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            size: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, CosmicConfigEntry)]
 #[version = 1]
 pub struct CosmicCompConfig {
@@ -131,6 +165,8 @@ pub struct CosmicCompConfig {
     /// Draw status marks still instead of animating them,
     /// for users who asked for less motion.
     pub reduced_motion: bool,
+    /// Space around maximized windows.
+    pub maximized_padding: MaximizedPadding,
 }
 
 impl Default for CosmicCompConfig {
@@ -177,6 +213,7 @@ impl Default for CosmicCompConfig {
             activation_policy: ActivationPolicy::default(),
             clipboard_persistence: true,
             reduced_motion: false,
+            maximized_padding: MaximizedPadding::default(),
         }
     }
 }
@@ -305,4 +342,46 @@ pub enum XwaylandDescaling {
     Disabled,
     #[default]
     Fractional,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MaximizedPadding;
+
+    #[test]
+    fn maximized_padding_defaults_to_the_theme_inset() {
+        let default = MaximizedPadding::default();
+        assert_eq!(default.resolve(10), 10);
+        assert_eq!(default.resolve(0), 0);
+        let parsed: MaximizedPadding = ron::from_str("()").unwrap();
+        assert_eq!(parsed, default, "a key without fields is the default");
+    }
+
+    #[test]
+    fn maximized_padding_off_keeps_the_chosen_size() {
+        let off: MaximizedPadding = ron::from_str("(enabled: false, size: Some(24))").unwrap();
+        assert_eq!(off.resolve(10), 0);
+        assert_eq!(
+            MaximizedPadding {
+                enabled: true,
+                ..off
+            }
+            .resolve(10),
+            24
+        );
+    }
+
+    #[test]
+    fn maximized_padding_is_clamped() {
+        let huge = MaximizedPadding {
+            enabled: true,
+            size: Some(4000),
+        };
+        assert_eq!(huge.resolve(10), MaximizedPadding::MAX as i32);
+        let zero = MaximizedPadding {
+            enabled: true,
+            size: Some(0),
+        };
+        assert_eq!(zero.resolve(10), 0);
+    }
 }

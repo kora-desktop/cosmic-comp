@@ -46,8 +46,9 @@ pub mod voice;
 use crate::toolkit_config::{ToolkitConfig, icon_theme_default, icon_theme_set_default};
 pub use cosmic_comp_config::EdidProduct;
 use cosmic_comp_config::{
-    ActivationPolicy, AppearanceConfig, CosmicCompConfig, KeyboardConfig, TileBehavior,
-    WorkspaceTransition, XkbConfig, XwaylandDescaling, XwaylandEavesdropping, ZoomConfig,
+    ActivationPolicy, AppearanceConfig, CosmicCompConfig, KeyboardConfig, MaximizedPadding,
+    TileBehavior, WorkspaceTransition, XkbConfig, XwaylandDescaling, XwaylandEavesdropping,
+    ZoomConfig,
     input::{DeviceState as InputDeviceState, InputConfig, TouchpadOverride},
     output::comp::{
         OutputConfig, OutputInfo, OutputState, OutputsConfig, TransformDef, load_outputs,
@@ -1217,6 +1218,22 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                     state.common.theme.reduced_motion = new;
                     // Decorations copy the theme when built; push it so a
                     // breathing mark stops (or starts) now.
+                    let theme = state.common.theme.clone();
+                    let shell = state.common.shell.clone();
+                    let mut workspace_guard = state.common.workspace_state.update();
+                    shell.write().set_theme(
+                        theme,
+                        &state.common.xdg_activation_state,
+                        &mut workspace_guard,
+                    );
+                }
+            }
+            "maximized_padding" => {
+                let new = get_config::<MaximizedPadding>(&config, "maximized_padding");
+                if new != state.common.config.cosmic_conf.maximized_padding {
+                    state.common.config.cosmic_conf.maximized_padding = new;
+                    state.common.theme.maximized_padding = new;
+                    // Every window carries the theme; pushing it re-lays out maximized ones.
                     let theme = state.common.theme.clone();
                     let shell = state.common.shell.clone();
                     let mut workspace_guard = state.common.workspace_state.update();

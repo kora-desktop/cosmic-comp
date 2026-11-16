@@ -161,3 +161,13 @@ the parent focuses the dialog, keeps it in front and never reaches the parent, a
 parent never reaches it either, both reach the parent again once the dialog is gone, and a
 dialog whose parent app exits is told its parent was destroyed. Touch is not covered: Xvfb has
 no touch device. Inside a Kora workspace, pass a stand-in registry in `CC_BUS_SERVICE`.
+
+## Space around maximized windows
+
+`tools/maximize-check/check.sh` puts a panel-like bar on the bottom, then the left edge, and a
+flat-colour window that asks to be maximized, and measures where the window shows while it
+writes the compositor's `maximized_padding` key: 0, 24 px, off, the theme's default, then 16 and
+40 px with the bar on the left. It fails unless the window is configured and drawn inside the
+bar's work area less the padding on every side, follows each write without being remapped, and a
+fullscreen window ignores the key. Inside a Kora workspace it serves a stand-in registry from
+`tools/grants-check` (`GRANTS_CHECK` names a prebuilt one) so the window's realm is on screen.
