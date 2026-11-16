@@ -60,9 +60,8 @@ impl CaptureKind {
     }
 }
 
-/// Where a capture waits while its preview is up, under the window's home.
-/// Accepted drops leave it here for the app that took it.
-const PENDING_DIR: &str = ".local/share/kora/captures";
+/// A recording's name while it is being written, so nothing takes it for a whole file.
+const PARTIAL: &str = "part";
 
 pub fn default_root_is_home(value: Option<&str>) -> bool {
     matches!(value, Some("home" | "HOME"))
@@ -124,10 +123,10 @@ pub fn directory_for(state: &State, surface: &CosmicSurface, kind: CaptureKind) 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Destination {
     pub kind: CaptureKind,
-    /// Where the file waits while previewed.
-    pub pending: PathBuf,
-    /// Where it is filed when the preview runs out.
+    /// Where the file is written and stays.
     pub save_to: PathBuf,
+    /// Where a recording's poster waits for the preview, outside the home.
+    pub posters: PathBuf,
     /// The window's home on the machine, and the home apps there see it as.
     pub home: PathBuf,
     pub seen_as: PathBuf,
@@ -145,8 +144,10 @@ impl Destination {
         let window_home = workspace_home(home, workspace, default_root_is_home);
         Self {
             kind,
-            pending: window_home.join(PENDING_DIR),
             save_to: directory(kind, home, workspace, default_root_is_home, configured),
+            posters: std::env::var_os("XDG_RUNTIME_DIR")
+                .map_or_else(std::env::temp_dir, PathBuf::from)
+                .join("cosmic-comp-posters"),
             seen_as: home.to_path_buf(),
             home: window_home,
             workspace: workspace.map(str::to_string),
@@ -163,6 +164,23 @@ impl Destination {
             default_root_is_home(std::env::var(DEFAULT_ROOT_ENV).ok().as_deref()),
             std::env::var_os(kind.env()).as_deref(),
         ))
+    }
+
+    /// A new recording's path while it is written: `<name>.mp4.part`, under a free name.
+    pub fn partial(&self, time: &jiff::Zoned) -> PathBuf {
+        let stem = capture_stem(self.kind, time);
+        let ext = "mp4";
+        std::iter::once(stem.clone())
+            .chain((2..100).map(|n| format!("{stem} ({n})")))
+            .map(|name| self.save_to.join(format!("{name}.{ext}.{PARTIAL}")))
+            .find(|p| !p.exists() && !p.with_extension("").exists())
+            .unwrap_or_else(|| self.save_to.join(format!("{stem}.{ext}.{PARTIAL}")))
+    }
+
+    /// The poster of the recording at `recording`.
+    pub fn poster_of(&self, recording: &Path) -> PathBuf {
+        let name = recording.file_name().unwrap_or_default();
+        self.posters.join(name).with_extension("poster.png")
     }
 
     /// `path` as apps in the window's workspace name it: the sandbox mounts
@@ -227,9 +245,22 @@ pub fn file_uri(path: &Path) -> String {
     out
 }
 
-/// Move `path` into `dir` under a name not taken there; the new path.
-pub fn file_into(path: &Path, dir: &Path) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
+/// A finished recording's `.part` renamed to a name not taken; other paths as they are.
+pub fn finish_partial(path: &Path) -> std::io::Result<PathBuf> {
+    if path.extension().and_then(OsStr::to_str) != Some(PARTIAL) {
+        return Ok(path.to_path_buf());
+    }
+    let whole = path.with_extension("");
+    let Some(dir) = whole.parent() else {
+        return Ok(path.to_path_buf());
+    };
+    let to = free_name(dir, &whole)?;
+    std::fs::rename(path, &to)?;
+    Ok(to)
+}
+
+/// `path`, or `name (n).ext` beside it, whichever is not taken.
+fn free_name(dir: &Path, path: &Path) -> std::io::Result<PathBuf> {
     let name = path
         .file_name()
         .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no file name"))?
@@ -239,10 +270,20 @@ pub fn file_into(path: &Path, dir: &Path) -> std::io::Result<PathBuf> {
         Some((stem, ext)) if !stem.is_empty() => (stem.to_string(), format!(".{ext}")),
         _ => (name.clone(), String::new()),
     };
-    let to = std::iter::once(dir.join(&name))
+    std::iter::once(dir.join(&name))
         .chain((2..100).map(|n| dir.join(format!("{stem} ({n}){ext}"))))
         .find(|p| !p.exists())
-        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free name"))?;
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::AlreadyExists, "no free name"))
+}
+
+/// Move `path` into `dir` under a name not taken there; the new path. A file
+/// already in `dir` stays as it is.
+pub fn file_into(path: &Path, dir: &Path) -> std::io::Result<PathBuf> {
+    if path.parent() == Some(dir) {
+        return Ok(path.to_path_buf());
+    }
+    std::fs::create_dir_all(dir)?;
+    let to = free_name(dir, path)?;
     if std::fs::rename(path, &to).is_err() {
         std::fs::copy(path, &to)?;
         std::fs::remove_file(path)?;
@@ -315,26 +356,22 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_waits_in_its_workspace_and_is_named_there_as_its_apps_see_it() {
+    fn a_capture_is_saved_in_its_workspace_and_named_there_as_its_apps_see_it() {
         let home = Path::new("/home/u");
         let dest = Destination::new(CaptureKind::Recording, home, Some("work"), false, None);
-        assert_eq!(
-            dest.pending,
-            Path::new("/home/u/Workspaces/work/.local/share/kora/captures")
-        );
         assert_eq!(
             dest.save_to,
             Path::new("/home/u/Workspaces/work/Captures/Recordings")
         );
-        let file = dest.pending.join("Screen Recording 1.mp4");
+        let file = dest.save_to.join("Screen Recording 1.mp4");
         assert_eq!(
             dest.seen_inside(&file),
-            Path::new("/home/u/.local/share/kora/captures/Screen Recording 1.mp4")
+            Path::new("/home/u/Captures/Recordings/Screen Recording 1.mp4")
         );
         let capture = dest.handoff(&file, "Slate", None, Some(5400)).capture;
         assert_eq!(
             capture.uri.as_deref(),
-            Some("file:///home/u/.local/share/kora/captures/Screen%20Recording%201.mp4")
+            Some("file:///home/u/Captures/Recordings/Screen%20Recording%201.mp4")
         );
         assert_eq!(
             capture.downloads.as_deref(),
@@ -345,11 +382,47 @@ mod tests {
         assert_eq!(capture.duration_ms, Some(5400));
 
         let outside = Destination::new(CaptureKind::Screenshot, home, None, false, None);
+        assert_eq!(outside.seen_inside(&outside.save_to), outside.save_to);
+    }
+
+    // The preview and the Captures folder never show a recording still being written.
+    #[test]
+    fn a_recording_is_written_as_a_part_file_and_named_once_it_ends() {
+        let dir = std::env::temp_dir().join(format!("cosmic-comp-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut dest = Destination::new(CaptureKind::Recording, &dir, None, false, None);
+        dest.posters = dir.join("posters");
+        std::fs::create_dir_all(&dest.save_to).unwrap();
+        std::fs::write(
+            dest.save_to
+                .join("Screen Recording 2026-09-10 at 14.25.30.mp4"),
+            b"older",
+        )
+        .unwrap();
+        let partial = dest.partial(&at(14, 25, 30));
         assert_eq!(
-            outside.pending,
-            Path::new("/home/u/.local/share/kora/captures")
+            partial,
+            dest.save_to
+                .join("Screen Recording 2026-09-10 at 14.25.30 (2).mp4.part")
         );
-        assert_eq!(outside.seen_inside(&outside.pending), outside.pending);
+        assert_eq!(
+            dest.poster_of(&partial),
+            dir.join("posters/Screen Recording 2026-09-10 at 14.25.30 (2).mp4.poster.png")
+        );
+        std::fs::write(&partial, b"video").unwrap();
+        let done = finish_partial(&partial).unwrap();
+        assert_eq!(
+            done,
+            dest.save_to
+                .join("Screen Recording 2026-09-10 at 14.25.30 (2).mp4")
+        );
+        assert!(done.is_file() && !partial.exists());
+        assert_eq!(
+            finish_partial(&done).unwrap(),
+            done,
+            "a whole file stays as it is"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -367,6 +440,11 @@ mod tests {
             b"old"
         );
         assert!(!dir.join("Shot.png").exists());
+        assert_eq!(
+            file_into(&to, &dir.join("Captures")).unwrap(),
+            to,
+            "saved files stay put"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
