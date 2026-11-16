@@ -1,3 +1,10 @@
+# [2.2.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.1.0...v2.2.0) (2026-11-16)
+
+
+### Features
+
+* **auto-hide:** hide and reveal on the top, left and right edges ([001affb](https://github.com/kora-desktop/cosmic-comp/commit/001affb8835509c7852375ef08900ff909f44a39))
+
 # [2.1.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.0.1...v2.1.0) (2026-11-16)
 
 
