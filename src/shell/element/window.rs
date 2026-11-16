@@ -1070,6 +1070,11 @@ impl CosmicWindow {
             .with_program(|p| p.theme.lock().unwrap().window_inset().round() as i32)
     }
 
+    pub fn maximized_inset(&self) -> i32 {
+        self.0
+            .with_program(|p| p.theme.lock().unwrap().maximized_inset())
+    }
+
     pub fn focus_under(
         &self,
         relative_pos: Point<f64, Logical>,

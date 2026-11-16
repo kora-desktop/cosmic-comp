@@ -1174,6 +1174,16 @@ impl CosmicMapped {
         crate::shell::layout::floating::Room::around(self.halo_clearance(), inset)
     }
 
+    /// The room a maximized window keeps: the user's space instead of the theme's inset.
+    pub fn maximized_room(&self) -> crate::shell::layout::floating::Room {
+        let inset = match &self.element {
+            CosmicMappedInternal::Window(w) => w.maximized_inset(),
+            CosmicMappedInternal::Stack(s) => s.maximized_inset(),
+            _ => 0,
+        };
+        crate::shell::layout::floating::Room::around(self.halo_clearance(), inset)
+    }
+
     /// Check if this mapped element has server-side decorations (SSD header)
     pub fn has_ssd(&self) -> bool {
         match &self.element {

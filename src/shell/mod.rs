@@ -10956,7 +10956,7 @@ impl Shell {
         let zone = layer_map_for_output(output).non_exclusive_zone();
         Some((
             layer,
-            layout::floating::window_zone(zone, mapped.window_room()).as_local(),
+            layout::floating::window_zone(zone, mapped.maximized_room()).as_local(),
         ))
     }
 
