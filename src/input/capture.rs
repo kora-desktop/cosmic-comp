@@ -18,6 +18,7 @@ pub fn arguments(action: &shortcuts::Action) -> Option<&'static str> {
         Action::CaptureSelectionClipboard => "selection --clipboard",
         Action::CaptureToolbar => "toolbar",
         Action::StopRecording => "stop",
+        Action::PickColor => "pick-color",
         _ => return None,
     })
 }
@@ -42,7 +43,8 @@ pub fn command(
         return Some(format!("{program} {arguments}"));
     }
     match action {
-        shortcuts::Action::StopRecording => None,
+        // The screenshot tool has nothing to stop and picks no colour.
+        shortcuts::Action::StopRecording | shortcuts::Action::PickColor => None,
         _ => system_actions.get(&System::Screenshot).cloned(),
     }
 }
@@ -75,7 +77,7 @@ mod tests {
     use super::*;
     use shortcuts::Action;
 
-    const CAPTURES: [(Action, &str); 6] = [
+    const CAPTURES: [(Action, &str); 7] = [
         (Action::CaptureScreen, "kora-capture screen"),
         (
             Action::CaptureScreenClipboard,
@@ -88,6 +90,7 @@ mod tests {
         ),
         (Action::CaptureToolbar, "kora-capture toolbar"),
         (Action::StopRecording, "kora-capture stop"),
+        (Action::PickColor, "kora-capture pick-color"),
     ];
 
     fn screenshot_tool() -> BTreeMap<System, String> {
@@ -132,7 +135,7 @@ mod tests {
         for (action, _) in CAPTURES {
             let got = command(&action, None, &screenshot_tool());
             let want = match action {
-                Action::StopRecording => None,
+                Action::StopRecording | Action::PickColor => None,
                 _ => Some("cosmic-screenshot"),
             };
             assert_eq!(got.as_deref(), want, "{action:?}");

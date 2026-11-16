@@ -1192,6 +1192,7 @@ impl State {
             | Action::CaptureSelection
             | Action::CaptureSelectionClipboard
             | Action::CaptureToolbar
+            | Action::PickColor
             | Action::StopRecording) => {
                 let program = super::capture::installed_program();
                 let system_actions = &self.common.config.system_actions;
