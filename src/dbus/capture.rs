@@ -18,6 +18,36 @@ use crate::state::State;
 /// The recorder's answer, back on the compositor thread.
 pub type Reply = Result<String, String>;
 
+/// The recorder's answer to a stop: the finished file's path, or why not.
+pub type StopReply = Result<String, StopFailure>;
+
+/// Why a stop did not hand back a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StopFailure {
+    /// The engine has no recording by that id: it ended without a word.
+    NoSuchRecording,
+    Failed(String),
+}
+
+/// `StopRecording` takes only an id, so the engine's InvalidArgs means it has
+/// no such recording.
+const NO_SUCH_RECORDING: &str = "org.freedesktop.DBus.Error.InvalidArgs";
+
+impl From<zbus::Error> for StopFailure {
+    fn from(err: zbus::Error) -> Self {
+        let no_such = match &err {
+            zbus::Error::MethodError(name, ..) => name.as_str() == NO_SUCH_RECORDING,
+            zbus::Error::FDO(fdo) => matches!(**fdo, zbus::fdo::Error::InvalidArgs(_)),
+            _ => false,
+        };
+        if no_such {
+            Self::NoSuchRecording
+        } else {
+            Self::Failed(err.to_string())
+        }
+    }
+}
+
 impl DBusState {
     /// Record the toplevel `identifier` into `path`. `done` gets the recording id.
     pub fn start_recording(
@@ -37,13 +67,23 @@ impl DBusState {
     }
 
     /// Finish the recording `id`. `done` gets the file's path.
-    pub fn stop_recording(&self, id: String, done: impl FnOnce(&mut State, Reply) + 'static) {
+    pub fn stop_recording(&self, id: String, done: impl FnOnce(&mut State, StopReply) + 'static) {
         let state = self.clone();
         let evlh = self.0.evlh.clone();
         self.spawn(async move {
-            let reply = stop(&state, &id).await.map_err(|err| err.to_string());
+            let reply = match state.session_conn().await {
+                Ok(conn) => stop(conn, &id).await,
+                Err(err) => Err(err.into()),
+            };
             evlh.insert_idle(move |state| done(state, reply));
         });
+    }
+
+    /// The engine has no recording `id`: game mode stops listing it, quietly.
+    pub fn forget_recording(&self, id: String) {
+        if let Some(forget) = &*self.0.forget_recording.borrow() {
+            let _ = forget.unbounded_send(id);
+        }
     }
 }
 
@@ -61,10 +101,9 @@ async fn start(state: &DBusState, identifier: &str, path: &str) -> zbus::Result<
         .await
 }
 
-async fn stop(state: &DBusState, id: &str) -> zbus::Result<String> {
-    let conn = state.session_conn().await?;
+async fn stop(conn: &zbus::Connection, id: &str) -> StopReply {
     let proxy = CaptureEngine1Proxy::new(conn).await?;
-    proxy.stop_recording(id).await
+    Ok(proxy.stop_recording(id).await?)
 }
 
 enum Heard {
@@ -75,6 +114,18 @@ enum Heard {
         path: String,
         error: String,
     },
+    /// A stop found the engine without this recording.
+    Forgotten(String),
+}
+
+/// What game mode shows after one event from the engine.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Mirrored {
+    /// The earliest start and every id, or `None` when the engine did not answer.
+    listed: Option<(u64, Vec<String>)>,
+    /// Endings to announce: id (empty when `RecordingStopped` reaches the halo
+    /// itself), path, and error.
+    ended: Vec<(String, String, String)>,
 }
 
 /// Mirror the engine's recordings onto game mode: what it lists right now,
@@ -83,8 +134,24 @@ enum Heard {
 /// while it has an owner, and it serves every recording it has.
 pub(super) async fn watch_recordings(state: DBusState) -> Result<()> {
     let conn = state.session_conn().await?.clone();
-    let dbus = DBusProxy::new(&conn).await.context("bus proxy")?;
-    let proxy = CaptureEngine1Proxy::builder(&conn)
+    let (forget, forgotten) = futures_channel::mpsc::unbounded();
+    *state.0.forget_recording.borrow_mut() = Some(forget);
+    let evlh = state.0.evlh.clone();
+    follow_recordings(&conn, forgotten, move |mirrored| {
+        evlh.insert_idle(move |state| apply(state, mirrored));
+        true
+    })
+    .await
+}
+
+/// Hand `emit` what game mode shows after each event, until it returns false.
+async fn follow_recordings(
+    conn: &zbus::Connection,
+    forgotten: impl futures_util::Stream<Item = String> + Unpin,
+    mut emit: impl FnMut(Mirrored) -> bool,
+) -> Result<()> {
+    let dbus = DBusProxy::new(conn).await.context("bus proxy")?;
+    let proxy = CaptureEngine1Proxy::builder(conn)
         .cache_properties(CacheProperties::No)
         .build()
         .await
@@ -111,27 +178,38 @@ pub(super) async fn watch_recordings(state: DBusState) -> Result<()> {
                 error: args.error.clone(),
             }))
         });
-    let mut events = Box::pin(select(owners, select(started, stopped)));
+    let forgotten = forgotten.map(Heard::Forgotten);
+    let mut events = Box::pin(select(owners, select(started, select(stopped, forgotten))));
 
     let mut known: HashMap<String, String> = HashMap::new();
-    mirror(&state, &dbus, &proxy, Heard::Refresh, &mut known).await;
+    if !emit(mirror(&dbus, &proxy, Heard::Refresh, &mut known).await) {
+        return Ok(());
+    }
     while let Some(heard) = events.next().await {
-        mirror(&state, &dbus, &proxy, heard, &mut known).await;
+        if !emit(mirror(&dbus, &proxy, heard, &mut known).await) {
+            break;
+        }
     }
     Ok(())
 }
 
 async fn mirror(
-    state: &DBusState,
     dbus: &DBusProxy<'_>,
     proxy: &CaptureEngine1Proxy<'_>,
     heard: Heard,
     known: &mut HashMap<String, String>,
-) {
+) -> Mirrored {
     let mut ended = Vec::new();
-    if let Heard::Stopped { id, path, error } = heard {
-        known.remove(&id);
-        ended.push((String::new(), path, error));
+    match heard {
+        Heard::Stopped { id, path, error } => {
+            known.remove(&id);
+            ended.push((String::new(), path, error));
+        }
+        // Its stop already told whoever asked; a failure here would be a second word.
+        Heard::Forgotten(id) => {
+            known.remove(&id);
+        }
+        Heard::Refresh => {}
     }
     let name = BusName::from_static_str(BUS_NAME).expect("the recorder's name is valid");
     // None when the engine is there but did not answer: nothing changes then.
@@ -155,24 +233,29 @@ async fn mirror(
         let since = listed.iter().map(|r| r.started).min().unwrap_or(0);
         (since, listed.into_iter().map(|r| r.id).collect::<Vec<_>>())
     });
-    state.0.evlh.insert_idle(move |state| {
-        if let Some((since, ids)) = snapshot {
-            state.common.game_mode_bridge.set_recordings(since, ids);
+    Mirrored {
+        listed: snapshot,
+        ended,
+    }
+}
+
+fn apply(state: &mut State, Mirrored { listed, ended }: Mirrored) {
+    if let Some((since, ids)) = listed {
+        state.common.game_mode_bridge.set_recordings(since, ids);
+    }
+    for (id, path, error) in ended {
+        if !id.is_empty() {
+            crate::utils::recording::stopped(state, &id, &path, &error);
         }
-        for (id, path, error) in ended {
-            if !id.is_empty() {
-                crate::utils::recording::stopped(state, &id, &path, &error);
-            }
-            state.common.game_mode_bridge.notify_recording_ended(
-                path,
-                if error.is_empty() {
-                    String::new()
-                } else {
-                    crate::utils::recording::failure_code(&error).to_owned()
-                },
-            );
-        }
-    });
+        state.common.game_mode_bridge.notify_recording_ended(
+            path,
+            if error.is_empty() {
+                String::new()
+            } else {
+                crate::utils::recording::failure_code(&error).to_owned()
+            },
+        );
+    }
 }
 
 /// Follow `RecordingStopped` for as long as the session bus lives: every
@@ -243,3 +326,7 @@ pub(super) async fn watch_windows(state: DBusState) -> Result<()> {
     .context("add WindowRecordingStarted to the event loop")?;
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "capture_tests.rs"]
+mod tests;
