@@ -1,3 +1,10 @@
+## [2.3.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.3.0...v2.3.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **captures:** save halo captures straight into Captures ([8947523](https://github.com/kora-desktop/cosmic-comp/commit/894752310d4eb67750d20dc6b3e962f499fa3834))
+
 # [2.3.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.2.1...v2.3.0) (2026-11-16)
 
 
