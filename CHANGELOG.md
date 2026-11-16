@@ -1,3 +1,15 @@
+# [2.3.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.2.1...v2.3.0) (2026-11-16)
+
+
+### Bug Fixes
+
+* **deps:** follow cosmic-settings-daemon master again ([91cb54d](https://github.com/kora-desktop/cosmic-comp/commit/91cb54d6abd59945f6ffb3ce0fbee1d17479755a))
+
+
+### Features
+
+* pick a colour with Super+Shift+6 ([ab3094d](https://github.com/kora-desktop/cosmic-comp/commit/ab3094d76a399b2b83db0384945f5254fae6c990))
+
 ## [2.2.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.2.0...v2.2.1) (2026-11-16)
 
 
