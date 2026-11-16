@@ -104,6 +104,9 @@ mod output_bounds;
 /// resize, and two such presses within the double-click window toggle maximize/restore.
 const EDGE_GRAB_PX: f64 = 8.0;
 
+/// Two presses closer than this are one double-click.
+pub(crate) const DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
 /// Used for debouncing focus updates due to pointer motion, if after the focus change is
 /// triggered the event will cancel if the pointer moves to the original target
 #[derive(Debug)]
@@ -1080,8 +1083,6 @@ impl State {
                                 // instead of starting a drag. The press is never forwarded
                                 // to the client, so the double-click is timed here,
                                 // compositor-side, against the previous edge press.
-                                const DOUBLE_CLICK: std::time::Duration =
-                                    std::time::Duration::from_millis(400);
                                 // The two clicks must land within the same edge grab zone.
                                 const POS_TOL: f64 = EDGE_GRAB_PX;
                                 let now = std::time::Instant::now();

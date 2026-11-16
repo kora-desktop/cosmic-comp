@@ -277,6 +277,10 @@ pub enum Recording {
 #[derive(Default)]
 struct RecordingState(Mutex<Recording>);
 
+/// When the halo's stop was last pressed, so a quick second press is not a new start.
+#[derive(Default)]
+struct HaloStopPress(Mutex<Option<std::time::Instant>>);
+
 /// Screenshot feedback: a flash over the window body that fades out, started
 /// when the window was captured. It lives on the surface so every path that
 /// draws the body (floating window, stack tab, fullscreen) reads one state.
@@ -661,6 +665,20 @@ impl CosmicSurface {
 
     pub fn set_recording(&self, recording: Recording) {
         *self.recording_state().0.lock().unwrap() = recording;
+    }
+
+    fn halo_stop_press(&self) -> &HaloStopPress {
+        self.0
+            .user_data()
+            .get_or_insert_threadsafe(HaloStopPress::default)
+    }
+
+    pub fn halo_stop_pressed(&self) -> Option<std::time::Instant> {
+        *self.halo_stop_press().0.lock().unwrap()
+    }
+
+    pub fn set_halo_stop_pressed(&self, at: std::time::Instant) {
+        *self.halo_stop_press().0.lock().unwrap() = Some(at);
     }
 
     /// Whether the halo shows this window as recording: started or starting.
