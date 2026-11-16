@@ -1799,7 +1799,7 @@ impl State {
                             crate::shell::edge_reveal::EdgeSwipe {
                                 slot: i32::from(event.slot()),
                                 edge,
-                                start: position.y,
+                                start: edge.across(position),
                             }
                         });
                         *seat
@@ -1891,7 +1891,8 @@ impl State {
                         .and_then(|swipe| {
                             let mut swipe = swipe.lock().unwrap();
                             let done = swipe.filter(|swipe| {
-                                swipe.slot == i32::from(event.slot()) && swipe.swiped(position.y)
+                                swipe.slot == i32::from(event.slot())
+                                    && swipe.swiped(swipe.edge.across(position))
                             });
                             if done.is_some() {
                                 *swipe = None;
@@ -1900,10 +1901,11 @@ impl State {
                         });
                     if let Some(swipe) = swiped {
                         // The swipe was the shell's, not the app's.
-                        self.common
-                            .shell
-                            .write()
-                            .reveal_by_touch(&output, swipe.edge, position.x);
+                        self.common.shell.write().reveal_by_touch(
+                            &output,
+                            swipe.edge,
+                            swipe.edge.along(position),
+                        );
                         touch.cancel(self);
                         self.backend.schedule_render(&output);
                         return;
@@ -3054,7 +3056,7 @@ impl State {
                         let layer_geo = layer.bbox();
                         let surface_id = layer.wl_surface().id();
                         let (ox, oy) =
-                            shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
+                            shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size);
                         let (sx, sy) = shell.get_layer_slide_offset(&surface_id);
                         // Popover open-animation translate (slide-up), so hit-testing
                         // tracks the surface as it rises into place.
@@ -3275,7 +3277,7 @@ impl State {
                         let layer_geo = layer.bbox();
                         let surface_id = layer.wl_surface().id();
                         let (ox, oy) =
-                            shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
+                            shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size);
                         let (sx, sy) = shell.get_layer_slide_offset(&surface_id);
                         // Popover open-animation translate (slide-up), so pointer
                         // hit-testing tracks the surface as it rises into place.
@@ -3560,13 +3562,16 @@ fn edge_barrier_hold(
 ) -> Option<Point<f64, Global>> {
     use crate::shell::edge_reveal::{Edge, EdgeBarrier};
     let geometry = output.geometry().to_f64();
-    let (top, bottom) = (geometry.loc.y, geometry.loc.y + geometry.size.h);
-    let crossing = [Edge::Bottom, Edge::Top].into_iter().find(|&edge| {
-        edge.past(top, bottom, from.y, to.y) > 0.0
+    let past = |edge: Edge| {
+        let (start, end) = edge.span(geometry);
+        edge.past(start, end, edge.across(from), edge.across(to))
+    };
+    let crossing = Edge::ALL.into_iter().find(|&edge| {
+        past(edge) > 0.0
             && shell
                 .outputs()
                 .any(|other| other != output && other.geometry().to_f64().contains(to))
-            && shell.reveal_armed(output, edge, from.x)
+            && shell.reveal_armed(output, edge, edge.along(from))
     });
     let barrier = seat
         .user_data()
@@ -3576,14 +3581,9 @@ fn edge_barrier_hold(
         barrier.hold(0.0);
         return None;
     };
-    barrier.hold(edge.past(top, bottom, from.y, to.y)).then(|| {
-        let scale = output.current_scale().fractional_scale();
-        let right = (geometry.loc.x + geometry.size.w).next_down();
-        Point::from((
-            to.x.clamp(geometry.loc.x, right),
-            edge.rest(top, bottom, scale),
-        ))
-    })
+    barrier
+        .hold(past(edge))
+        .then(|| edge.rest_point(geometry, to, output.current_scale().fractional_scale()))
 }
 
 // Output and workspace sessions for the given output

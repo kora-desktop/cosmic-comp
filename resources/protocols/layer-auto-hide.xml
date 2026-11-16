@@ -88,6 +88,9 @@
         Specifies which output edge the surface slides toward when hidden.
       </description>
       <entry name="bottom" value="0" summary="slide off the bottom edge"/>
+      <entry name="top" value="1" summary="slide off the top edge"/>
+      <entry name="left" value="2" summary="slide off the left edge"/>
+      <entry name="right" value="3" summary="slide off the right edge"/>
     </enum>
 
     <enum name="mode">
@@ -116,6 +119,12 @@
         The edge_zone parameter specifies how many pixels at the screen edge
         will trigger hover-to-show when the surface is hidden. This should
         be a small value (e.g. 2-8 pixels).
+
+        The edge zone runs along the given edge of the surface's output, as
+        long as the surface runs beside it. A compositor that does not know
+        the edge ignores the request and leaves the surface shown. Over a
+        fullscreen window whose header reveals from the top edge, a top
+        surface's zone leaves that header's stretch of the edge to it.
 
         Calling this again replaces the previous configuration.
       </description>

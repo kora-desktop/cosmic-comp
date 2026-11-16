@@ -5316,46 +5316,74 @@ impl Shell {
         edge_reveal::reveals_held_back(game, constrained)
     }
 
-    /// Whether a reveal waits at `edge` of `output` around `x`: a surface that
-    /// auto-hides there now, or the fullscreen window's Halo.
-    pub fn reveal_armed(&self, output: &Output, edge: edge_reveal::Edge, x: f64) -> bool {
-        match edge {
-            edge_reveal::Edge::Bottom => {
-                let (windows, maximized, fullscreen) = (
-                    self.output_has_visible_windows(output),
-                    self.output_has_maximized_or_fullscreen(output),
-                    self.output_has_focused_fullscreen(output),
-                );
-                self.auto_hide_surfaces.iter().any(|surface| {
-                    surface.mode.should_hide(windows, maximized, fullscreen)
-                        && self.auto_hide_zone_spans(surface, output, x)
-                })
-            }
-            edge_reveal::Edge::Top => {
-                let (Some(workspace), Some(seat)) =
-                    (self.active_space(output), self.seats.last_active_checked())
-                else {
-                    return false;
-                };
-                !self.reveals_held_back_on(output)
-                    && workspace.get_fullscreen(seat).is_some_and(|fullscreen| {
-                        !fullscreen.is_animating() && fullscreen.halo.fullscreen_halo_can_reveal()
-                    })
-            }
+    /// Whether a reveal waits at `edge` of `output` around `along`: a surface
+    /// that auto-hides there now, or at the top the fullscreen window's Halo.
+    pub fn reveal_armed(&self, output: &Output, edge: edge_reveal::Edge, along: f64) -> bool {
+        let (windows, maximized, fullscreen) = (
+            self.output_has_visible_windows(output),
+            self.output_has_maximized_or_fullscreen(output),
+            self.output_has_focused_fullscreen(output),
+        );
+        let surface = self.auto_hide_surfaces.iter().any(|surface| {
+            surface.edge.reveal_edge() == edge
+                && surface.mode.should_hide(windows, maximized, fullscreen)
+                && self.auto_hide_zone_spans(surface, output, along)
+        });
+        surface || (edge == edge_reveal::Edge::Top && self.halo_reveal_armed(output, along))
+    }
+
+    /// The fullscreen Halo on `output` that the top edge can reveal now.
+    fn revealable_halo(&self, output: &Output) -> Option<CosmicWindow> {
+        let workspace = self.active_space(output)?;
+        let seat = self.seats.last_active_checked()?;
+        if self.reveals_held_back_on(output) {
+            return None;
         }
+        workspace
+            .get_fullscreen(seat)
+            .filter(|fullscreen| {
+                !fullscreen.is_animating() && fullscreen.halo.fullscreen_halo_can_reveal()
+            })
+            .map(|fullscreen| fullscreen.halo.clone())
+    }
+
+    /// Where along the top edge of `output` the Halo reveals, in global x,
+    /// when a top auto-hide surface shares that edge with it.
+    fn halo_top_span(&self, output: &Output) -> Option<(f64, f64)> {
+        let halo = self.revealable_halo(output)?;
+        let left = f64::from(output.geometry().loc.x);
+        halo.fullscreen_halo_span()
+            .map(|(from, to)| (left + from, left + to))
+    }
+
+    fn halo_reveal_armed(&self, output: &Output, x: f64) -> bool {
+        if self.revealable_halo(output).is_none() {
+            return false;
+        }
+        let shared = self.auto_hide_surfaces.iter().any(|surface| {
+            surface.edge == auto_hide::AutoHideEdge::Top
+                && surface
+                    .surface
+                    .upgrade()
+                    .is_ok_and(|wl| self.auto_hide_surface_output(&wl).as_ref() == Some(output))
+        });
+        !shared
+            || self
+                .halo_top_span(output)
+                .is_none_or(|(from, to)| x >= from && x < to)
     }
 
     fn auto_hide_zone_spans(
         &self,
         surface: &auto_hide::AutoHideSurface,
         output: &Output,
-        x: f64,
+        along: f64,
     ) -> bool {
         surface.surface.upgrade().is_ok_and(|wl| {
             self.auto_hide_surface_output(&wl).as_ref() == Some(output)
                 && self
-                    .auto_hide_edge_zone_rect(&wl)
-                    .is_some_and(|zone| x >= zone.loc.x && x < zone.loc.x + zone.size.w)
+                    .auto_hide_edge_zone(&wl, surface.edge)
+                    .is_some_and(|zone| zone.spans(along))
         })
     }
 
@@ -5366,39 +5394,36 @@ impl Shell {
         position: Point<f64, Global>,
     ) -> Option<edge_reveal::Edge> {
         let geometry = output.geometry().to_f64();
-        let (top, bottom) = (geometry.loc.y, geometry.loc.y + geometry.size.h);
-        [edge_reveal::Edge::Bottom, edge_reveal::Edge::Top]
-            .into_iter()
-            .find(|&edge| {
-                edge_reveal::EdgeSwipe::starts(edge, top, bottom, position.y)
-                    && self.reveal_armed(output, edge, position.x)
-            })
+        edge_reveal::Edge::ALL.into_iter().find(|&edge| {
+            let (start, end) = edge.span(geometry);
+            edge_reveal::EdgeSwipe::starts(edge, start, end, edge.across(position))
+                && self.reveal_armed(output, edge, edge.along(position))
+        })
     }
 
     /// A touch swiped in from `edge`: show what waits there until a touch lands elsewhere.
-    pub fn reveal_by_touch(&mut self, output: &Output, edge: edge_reveal::Edge, x: f64) {
-        match edge {
-            edge_reveal::Edge::Bottom => {
-                let spans: Vec<bool> = self
-                    .auto_hide_surfaces
-                    .iter()
-                    .map(|surface| self.auto_hide_zone_spans(surface, output, x))
-                    .collect();
-                for (surface, spans) in self.auto_hide_surfaces.iter_mut().zip(spans) {
-                    if spans {
-                        surface.touch_held = true;
-                        surface.visibility.start_show(false);
-                    }
-                }
+    pub fn reveal_by_touch(&mut self, output: &Output, edge: edge_reveal::Edge, along: f64) {
+        let spans: Vec<bool> = self
+            .auto_hide_surfaces
+            .iter()
+            .map(|surface| {
+                surface.edge.reveal_edge() == edge
+                    && self.auto_hide_zone_spans(surface, output, along)
+            })
+            .collect();
+        let surface = spans.contains(&true);
+        for (surface, spans) in self.auto_hide_surfaces.iter_mut().zip(spans) {
+            if spans {
+                surface.touch_held = true;
+                surface.visibility.start_show(false);
             }
-            edge_reveal::Edge::Top => {
-                if let (Some(workspace), Some(seat)) =
-                    (self.active_space(output), self.seats.last_active_checked())
-                    && let Some(fullscreen) = workspace.get_fullscreen(seat)
-                {
-                    fullscreen.halo.set_touch_revealed(true);
-                }
-            }
+        }
+        if edge == edge_reveal::Edge::Top
+            && !surface
+            && self.halo_reveal_armed(output, along)
+            && let Some(halo) = self.revealable_halo(output)
+        {
+            halo.set_touch_revealed(true);
         }
     }
 
@@ -5551,41 +5576,34 @@ impl Shell {
         None
     }
 
-    /// Get the margin rectangle between an auto-hide surface and the output
-    /// edge.  For a bottom-edge dock with a bottom margin, this is the gap
-    /// between the surface's bottom edge and the screen bottom.
-    /// Returns the rectangle in global coordinates.
-    fn auto_hide_surface_margin_rect(&self, surface: &WlSurface) -> Option<Rectangle<i32, Global>> {
+    /// The gap between an auto-hide surface and the output edge it hides
+    /// toward (a floating bar's margin), in global coordinates.
+    fn auto_hide_surface_margin_rect(
+        &self,
+        surface: &WlSurface,
+        edge: auto_hide::AutoHideEdge,
+    ) -> Option<Rectangle<i32, Global>> {
         let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
             for layer in layer_map.layers() {
                 if layer.wl_surface().id() == target_id {
                     let local_geo = layer_map.layer_geometry(layer)?;
-                    // Convert from Logical (output-local) to Global.
                     let global_geo = local_geo.as_local().to_global(output);
-                    let output_geo = output.geometry();
-                    let surface_bottom = global_geo.loc.y + global_geo.size.h;
-                    let output_bottom = output_geo.loc.y + output_geo.size.h;
-                    let margin_height = output_bottom - surface_bottom;
-                    if margin_height <= 0 {
-                        return None;
-                    }
-                    return Some(Rectangle::new(
-                        Point::from((global_geo.loc.x, surface_bottom)),
-                        Size::from((global_geo.size.w, margin_height)),
-                    ));
+                    return auto_hide::margin_rect(edge, output.geometry(), global_geo);
                 }
             }
         }
         None
     }
 
-    /// Get the edge zone rectangle for an auto-hide surface.
-    /// This is the thin strip at the screen edge used to trigger showing the
-    /// dock when it is hidden.  Returns `None` when the surface has no edge
-    /// zone configured or when the surface cannot be found.
-    fn auto_hide_edge_zone_rect(&self, surface: &WlSurface) -> Option<Rectangle<f64, Global>> {
+    /// The thin strip at the output edge that reveals a hidden auto-hide
+    /// surface. `None` when it has no edge zone or cannot be found.
+    fn auto_hide_edge_zone(
+        &self,
+        surface: &WlSurface,
+        edge: auto_hide::AutoHideEdge,
+    ) -> Option<auto_hide::EdgeZone<Global>> {
         let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
@@ -5600,18 +5618,24 @@ impl Shell {
                     }
                     let local_geo = layer_map.layer_geometry(layer)?;
                     let global_geo = local_geo.as_local().to_global(output);
-                    let output_geo = output.geometry();
-                    let output_bottom = output_geo.loc.y + output_geo.size.h;
                     let thickness = auto_hide::edge_zone_height(
                         edge_zone,
                         self.output_has_fullscreen(output),
                         output.current_scale().fractional_scale(),
                     );
-                    let zone_top = f64::from(output_bottom) - thickness;
-                    return Some(Rectangle::new(
-                        Point::from((f64::from(global_geo.loc.x), zone_top)),
-                        Size::from((f64::from(global_geo.size.w), thickness)),
-                    ));
+                    return Some(auto_hide::EdgeZone {
+                        edge: edge.reveal_edge(),
+                        rect: auto_hide::edge_zone_rect(
+                            edge,
+                            output.geometry().to_f64(),
+                            global_geo.to_f64(),
+                            thickness,
+                        ),
+                        // A top bar leaves the Halo's stretch of the edge to the Halo.
+                        ceded: (edge == auto_hide::AutoHideEdge::Top)
+                            .then(|| self.halo_top_span(output))
+                            .flatten(),
+                    });
                 }
             }
         }
@@ -5644,6 +5668,17 @@ impl Shell {
                 None
             })
             .collect();
+
+        // A top auto-hide surface takes the top edge except where the Halo is.
+        let top_shared = self.auto_hide_surfaces.iter().any(|surface| {
+            surface.edge == auto_hide::AutoHideEdge::Top
+                && matching_object_ids.contains(&surface.surface.id())
+        });
+        if let Some(workspace) = self.active_space(output) {
+            for fullscreen in &workspace.fullscreen_surfaces {
+                fullscreen.halo.set_top_edge_shared(top_shared);
+            }
+        }
 
         for surface in &mut self.auto_hide_surfaces {
             if !matching_object_ids.contains(&surface.surface.id()) {
@@ -5754,7 +5789,7 @@ impl Shell {
             .iter()
             .filter_map(|s| {
                 let wl = s.surface.upgrade().ok()?;
-                let rect = self.auto_hide_surface_margin_rect(&wl);
+                let rect = self.auto_hide_surface_margin_rect(&wl, s.edge);
                 Some((s.surface.id(), rect))
             })
             .collect();
@@ -5763,12 +5798,12 @@ impl Shell {
         // can trigger show when the cursor enters the edge zone while the
         // surface is hidden.  This replaces the old approach of returning
         // the dock surface as a pointer hit target from surface_under().
-        let edge_zone_rects: Vec<(ObjectId, Option<Rectangle<f64, Global>>)> = self
+        let edge_zone_rects: Vec<(ObjectId, Option<auto_hide::EdgeZone<Global>>)> = self
             .auto_hide_surfaces
             .iter()
             .filter_map(|s| {
                 let wl = s.surface.upgrade().ok()?;
-                let rect = self.auto_hide_edge_zone_rect(&wl);
+                let rect = self.auto_hide_edge_zone(&wl, s.edge);
                 Some((s.surface.id(), rect))
             })
             .collect();
@@ -5911,10 +5946,14 @@ impl Shell {
 
     /// Get the auto-hide render offset for a surface. Returns (0, 0) if the
     /// surface is not registered for auto-hide or is fully visible.
-    pub fn get_auto_hide_offset(&self, surface: &WlSurface, surface_height: i32) -> (i32, i32) {
+    pub fn get_auto_hide_offset(
+        &self,
+        surface: &WlSurface,
+        surface_size: Size<i32, Logical>,
+    ) -> (i32, i32) {
         for s in &self.auto_hide_surfaces {
             if s.surface == *surface {
-                return s.render_offset(surface_height);
+                return s.render_offset(surface_size);
             }
         }
         (0, 0)

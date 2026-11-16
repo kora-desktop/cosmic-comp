@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 //! The edge reveals over a fullscreen window: the Halo at the top and an
-//! auto-hiding panel at the bottom. They hold back over a game, which may
+//! auto-hiding panel on any edge. They hold back over a game, which may
 //! scroll when the pointer reaches an edge, and are reached by touch and at an
 //! edge shared with another output, which the pointer would cross instead.
 
 use crate::dbus::game_mode::LAUNCHER_APP_ID;
+use smithay::utils::{Point, Rectangle};
 
 /// Game mode shows a game, not its launcher, which is a fullscreen app like any other.
 pub fn game_mode_shows_game(active: bool, app_id: Option<u32>) -> bool {
@@ -29,32 +30,86 @@ pub const TOUCH_SWIPE: f64 = 24.0;
 pub enum Edge {
     Top,
     Bottom,
+    Left,
+    Right,
 }
 
 impl Edge {
-    /// How far `from` → `to` goes past this edge of the span `[top, bottom)`;
+    pub const ALL: [Edge; 4] = [Edge::Bottom, Edge::Top, Edge::Left, Edge::Right];
+
+    /// Whether the edge runs top to bottom, so it is crossed along x.
+    pub fn vertical(self) -> bool {
+        matches!(self, Edge::Left | Edge::Right)
+    }
+
+    fn at_start(self) -> bool {
+        matches!(self, Edge::Top | Edge::Left)
+    }
+
+    /// The `[start, end)` span of `area` on the axis that crosses this edge.
+    pub fn span<K>(self, area: Rectangle<f64, K>) -> (f64, f64) {
+        if self.vertical() {
+            (area.loc.x, area.loc.x + area.size.w)
+        } else {
+            (area.loc.y, area.loc.y + area.size.h)
+        }
+    }
+
+    /// The coordinate of `point` on the axis that crosses this edge.
+    pub fn across<K>(self, point: Point<f64, K>) -> f64 {
+        if self.vertical() { point.x } else { point.y }
+    }
+
+    /// The coordinate of `point` along this edge.
+    pub fn along<K>(self, point: Point<f64, K>) -> f64 {
+        if self.vertical() { point.y } else { point.x }
+    }
+
+    /// How far `from` → `to` goes past this edge of the span `[start, end)`;
     /// zero or less when it stays on this side.
-    pub fn past(self, top: f64, bottom: f64, from: f64, to: f64) -> f64 {
-        match self {
-            Edge::Bottom if from < bottom => to - bottom,
-            Edge::Top if from >= top => top - to,
-            _ => 0.0,
+    pub fn past(self, start: f64, end: f64, from: f64, to: f64) -> f64 {
+        if self.at_start() {
+            if from >= start { start - to } else { 0.0 }
+        } else if from < end {
+            to - end
+        } else {
+            0.0
         }
     }
 
     /// Where the pointer rests against this edge: inside the outermost physical pixel.
-    pub fn rest(self, top: f64, bottom: f64, scale: f64) -> f64 {
-        match self {
-            Edge::Top => top,
-            Edge::Bottom => bottom - 0.5 / scale,
+    pub fn rest(self, start: f64, end: f64, scale: f64) -> f64 {
+        if self.at_start() {
+            start
+        } else {
+            end - 0.5 / scale
         }
     }
 
-    /// Distance from this edge to `y`, inward.
-    pub fn inward(self, top: f64, bottom: f64, y: f64) -> f64 {
-        match self {
-            Edge::Top => y - top,
-            Edge::Bottom => bottom - y,
+    /// `to` held against this edge of `area`, still beside the output along it.
+    pub fn rest_point<K>(
+        self,
+        area: Rectangle<f64, K>,
+        to: Point<f64, K>,
+        scale: f64,
+    ) -> Point<f64, K> {
+        let (start, end) = self.span(area);
+        let rest = self.rest(start, end, scale);
+        if self.vertical() {
+            let bottom = (area.loc.y + area.size.h).next_down();
+            Point::from((rest, to.y.clamp(area.loc.y, bottom)))
+        } else {
+            let right = (area.loc.x + area.size.w).next_down();
+            Point::from((to.x.clamp(area.loc.x, right), rest))
+        }
+    }
+
+    /// Distance from this edge to `at`, inward.
+    pub fn inward(self, start: f64, end: f64, at: f64) -> f64 {
+        if self.at_start() {
+            at - start
+        } else {
+            end - at
         }
     }
 }
@@ -91,17 +146,19 @@ pub struct EdgeSwipe {
 }
 
 impl EdgeSwipe {
-    /// Whether a touch at `y` began close enough to `edge`.
-    pub fn starts(edge: Edge, top: f64, bottom: f64, y: f64) -> bool {
-        (0.0..TOUCH_EDGE).contains(&edge.inward(top, bottom, y))
+    /// Whether a touch at `at` (across the edge) began close enough to `edge`.
+    pub fn starts(edge: Edge, start: f64, end: f64, at: f64) -> bool {
+        (0.0..TOUCH_EDGE).contains(&edge.inward(start, end, at))
     }
 
-    /// Whether the touch, now at `y`, has swiped inward far enough.
-    pub fn swiped(&self, y: f64) -> bool {
-        match self.edge {
-            Edge::Top => y - self.start >= TOUCH_SWIPE,
-            Edge::Bottom => self.start - y >= TOUCH_SWIPE,
-        }
+    /// Whether the touch, now at `at` across its edge, has swiped inward far enough.
+    pub fn swiped(&self, at: f64) -> bool {
+        let inward = if self.edge.at_start() {
+            at - self.start
+        } else {
+            self.start - at
+        };
+        inward >= TOUCH_SWIPE
     }
 }
 
@@ -203,5 +260,56 @@ mod reach_tests {
         };
         assert!(down.swiped(26.0));
         assert!(!down.swiped(20.0));
+    }
+
+    #[test]
+    fn side_edges_cross_on_x_like_top_and_bottom_cross_on_y() {
+        let output = Rectangle::<f64, smithay::utils::Logical>::new(
+            (1920.0, 0.0).into(),
+            (1280.0, 800.0).into(),
+        );
+        assert_eq!(Edge::Left.span(output), (1920.0, 3200.0));
+        assert_eq!(Edge::Top.span(output), (0.0, 800.0));
+        let (start, end) = Edge::Left.span(output);
+        assert_eq!(Edge::Left.past(start, end, 1920.0, 1900.0), 20.0);
+        assert!(Edge::Left.past(start, end, 1930.0, 1925.0) <= 0.0);
+        assert_eq!(Edge::Right.past(start, end, 3199.5, 3210.0), 10.0);
+        let point = Point::<f64, smithay::utils::Logical>::from((1925.0, 300.0));
+        assert_eq!(
+            (Edge::Left.across(point), Edge::Left.along(point)),
+            (1925.0, 300.0)
+        );
+        assert_eq!(
+            (Edge::Top.across(point), Edge::Top.along(point)),
+            (300.0, 1925.0)
+        );
+
+        let held = Edge::Right.rest_point(output, Point::from((3300.0, 900.0)), 2.0);
+        assert!(
+            held.x < 3200.0 && 3200.0 - held.x < 0.5,
+            "inside the last pixel"
+        );
+        assert!(held.y < 800.0 && held.y > 799.0, "kept beside the output");
+        assert_eq!(
+            Edge::Left.rest_point(output, Point::from((1800.0, 10.0)), 1.0),
+            Point::from((1920.0, 10.0))
+        );
+
+        assert!(EdgeSwipe::starts(Edge::Left, start, end, 1930.0));
+        assert!(!EdgeSwipe::starts(Edge::Left, start, end, 1940.0));
+        assert!(EdgeSwipe::starts(Edge::Right, start, end, 3190.0));
+        let right = EdgeSwipe {
+            slot: 0,
+            edge: Edge::Right,
+            start: 3195.0,
+        };
+        assert!(right.swiped(3170.0));
+        assert!(!right.swiped(3180.0));
+        let left = EdgeSwipe {
+            slot: 0,
+            edge: Edge::Left,
+            start: 1922.0,
+        };
+        assert!(left.swiped(1946.0));
     }
 }

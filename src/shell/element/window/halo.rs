@@ -6,19 +6,21 @@ pub(super) fn fullscreen_hit(
     scale: f64,
     pill: Option<iced_core::Rectangle>,
     revealed: bool,
+    top_edge_shared: bool,
 ) -> bool {
     if point.x < 0.0 || point.x >= width || point.y < 0.0 {
         return false;
     }
-    // Only the outermost physical pixel can reveal a hidden header. Once it is
-    // revealed, bridge the 10px inset over the pill's width so controls are reachable.
-    point.y < 1.0 / scale
+    let over_pill = |pill: iced_core::Rectangle| {
+        point.x >= f64::from(pill.x) && point.x < f64::from(pill.x + pill.width)
+    };
+    // Only the outermost physical pixel can reveal a hidden header, and only above
+    // the pill when a top bar auto-hides on the rest of that edge. Once revealed,
+    // bridge the 10px inset over the pill's width so controls are reachable.
+    (point.y < 1.0 / scale && !(top_edge_shared && pill.is_some_and(|pill| !over_pill(pill))))
         || (revealed
-            && pill.is_some_and(|pill| {
-                point.x >= f64::from(pill.x)
-                    && point.x < f64::from(pill.x + pill.width)
-                    && point.y < f64::from(pill.y + pill.height)
-            }))
+            && pill
+                .is_some_and(|pill| over_pill(pill) && point.y < f64::from(pill.y + pill.height)))
 }
 use crate::{
     fl,
@@ -677,7 +679,9 @@ mod tests {
             iced_core::Size::new(400.0, 31.0),
         ));
         for scale in [1.0, 1.25, 2.0] {
-            let hit = |x, y, revealed| fullscreen_hit((x, y).into(), 1200.0, scale, pill, revealed);
+            let hit = |x, y, revealed| {
+                fullscreen_hit((x, y).into(), 1200.0, scale, pill, revealed, false)
+            };
             for x in [0.0, 600.0, 1199.9] {
                 assert!(hit(x, 0.0, false));
                 assert!(hit(x, 0.9 / scale, false));
@@ -701,6 +705,25 @@ mod tests {
             assert!(!hit(1200.0, 0.0, true));
             assert!(!hit(600.0, -1.0, true));
         }
+    }
+
+    /// A top bar that auto-hides takes the top edge beside the Halo; the Halo keeps
+    /// the stretch above its pill, so one push never reveals both.
+    #[test]
+    fn a_shared_top_edge_reveals_the_halo_only_above_its_pill() {
+        let pill = Some(iced_core::Rectangle::new(
+            iced_core::Point::new(400.0, 10.0),
+            iced_core::Size::new(400.0, 31.0),
+        ));
+        let hit = |x, pill| fullscreen_hit((x, 0.0).into(), 1200.0, 1.5, pill, false, true);
+        assert!(hit(400.0, pill));
+        assert!(hit(799.9, pill));
+        assert!(!hit(399.9, pill), "the bar's stretch");
+        assert!(!hit(800.0, pill), "the bar's stretch");
+        assert!(
+            hit(100.0, None),
+            "no measured pill: the whole edge, as before"
+        );
     }
 
     #[test]

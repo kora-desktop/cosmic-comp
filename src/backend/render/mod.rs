@@ -1746,7 +1746,7 @@ where
                 let layer_geo = layer.bbox();
 
                 let (offset_x, offset_y) =
-                    shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size.h);
+                    shell.get_auto_hide_offset(layer.wl_surface(), layer_geo.size);
                 // Also apply layer slide offset (side-panel visibility animation).
                 let (slide_x, slide_y) = shell.get_layer_slide_offset(&surface_id);
                 // And the interactive-resize offset, which pins the anchored edge to
