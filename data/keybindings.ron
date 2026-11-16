@@ -134,6 +134,7 @@
     (modifiers: [Super, Shift], key: "4"): CaptureSelection,
     (modifiers: [Super, Ctrl, Shift], key: "4"): CaptureSelectionClipboard,
     (modifiers: [Super, Shift], key: "5"): CaptureToolbar,
+    (modifiers: [Super, Shift], key: "6"): PickColor,
     (modifiers: [], key: "Print"): CaptureToolbar,
     (modifiers: [Super], key: "F23"): CaptureToolbar,
     (modifiers: [Super, Shift], key: "F23"): CaptureToolbar,

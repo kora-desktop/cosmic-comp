@@ -153,6 +153,7 @@ mod tests {
             ("Super+Shift+5", shortcuts::Action::CaptureToolbar),
             ("Print", shortcuts::Action::CaptureToolbar),
             ("Super+Ctrl+Escape", shortcuts::Action::StopRecording),
+            ("Super+Shift+6", shortcuts::Action::PickColor),
         ] {
             let binding = shortcuts::Binding::from_str(combo).unwrap();
             assert_eq!(shortcuts.0.get(&binding), Some(&want), "{combo}");

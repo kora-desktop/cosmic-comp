@@ -1145,7 +1145,7 @@ dependencies = [
 [[package]]
 name = "cosmic-settings-config"
 version = "0.1.0"
-source = "git+https://github.com/playtron-os/cosmic-settings-daemon#48c439e30d8a305b98d7baff467196b5af40a318"
+source = "git+https://github.com/playtron-os/cosmic-settings-daemon?rev=d69e88e58fa2c6d2c03999118fc19e84eab49b21#d69e88e58fa2c6d2c03999118fc19e84eab49b21"
 dependencies = [
  "cosmic-config",
  "ron 0.11.0",
