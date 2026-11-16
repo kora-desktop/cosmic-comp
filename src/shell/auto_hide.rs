@@ -19,7 +19,10 @@ use keyframe::{ease, functions::EaseInOutCubic};
 use smithay::reexports::wayland_server::Resource;
 use smithay::reexports::wayland_server::Weak;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::utils::{Logical, Point, Rectangle, Size};
 use std::time::{Duration, Instant};
+
+pub use super::edge_reveal::Edge;
 
 // ---------------------------------------------------------------------------
 // Constants – matching the tuned values from the dock's previous client-side
@@ -56,15 +59,124 @@ pub fn edge_zone_height(configured: u32, fullscreen: bool, scale: f64) -> f64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AutoHideEdge {
     Bottom,
+    Top,
+    Left,
+    Right,
 }
 
 impl AutoHideEdge {
     pub fn from_protocol(value: u32) -> Option<Self> {
         match value {
             0 => Some(AutoHideEdge::Bottom),
+            1 => Some(AutoHideEdge::Top),
+            2 => Some(AutoHideEdge::Left),
+            3 => Some(AutoHideEdge::Right),
             _ => None,
         }
     }
+
+    /// The output edge a pointer or touch reveals the surface from.
+    pub fn reveal_edge(self) -> Edge {
+        match self {
+            AutoHideEdge::Bottom => Edge::Bottom,
+            AutoHideEdge::Top => Edge::Top,
+            AutoHideEdge::Left => Edge::Left,
+            AutoHideEdge::Right => Edge::Right,
+        }
+    }
+
+    /// How far the surface travels to leave the output: its thickness across the edge.
+    fn depth(self, size: Size<i32, Logical>) -> i32 {
+        if self.reveal_edge().vertical() {
+            size.w
+        } else {
+            size.h
+        }
+    }
+}
+
+/// The strip `thickness` deep along `edge` of `output`, as long as `surface` runs beside it.
+pub fn edge_zone_rect<K>(
+    edge: AutoHideEdge,
+    output: Rectangle<f64, K>,
+    surface: Rectangle<f64, K>,
+    thickness: f64,
+) -> Rectangle<f64, K> {
+    let (x, y, w, h) = match edge {
+        AutoHideEdge::Bottom => (
+            surface.loc.x,
+            output.loc.y + output.size.h - thickness,
+            surface.size.w,
+            thickness,
+        ),
+        AutoHideEdge::Top => (surface.loc.x, output.loc.y, surface.size.w, thickness),
+        AutoHideEdge::Left => (output.loc.x, surface.loc.y, thickness, surface.size.h),
+        AutoHideEdge::Right => (
+            output.loc.x + output.size.w - thickness,
+            surface.loc.y,
+            thickness,
+            surface.size.h,
+        ),
+    };
+    Rectangle::new((x, y).into(), (w, h).into())
+}
+
+/// A reveal strip along an edge, less the stretch another reveal owns there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EdgeZone<K> {
+    pub edge: Edge,
+    pub rect: Rectangle<f64, K>,
+    /// `[start, end)` along the edge that belongs to the fullscreen Halo instead.
+    pub ceded: Option<(f64, f64)>,
+}
+
+impl<K> EdgeZone<K> {
+    /// Whether the strip reaches `along`, measured along its edge.
+    pub fn spans(&self, along: f64) -> bool {
+        let (start, len) = if self.edge.vertical() {
+            (self.rect.loc.y, self.rect.size.h)
+        } else {
+            (self.rect.loc.x, self.rect.size.w)
+        };
+        along >= start
+            && along < start + len
+            && !self
+                .ceded
+                .is_some_and(|(from, to)| along >= from && along < to)
+    }
+
+    pub fn contains(&self, point: Point<f64, K>) -> bool {
+        self.rect.contains(point) && self.spans(self.edge.along(point))
+    }
+}
+
+/// The gap between `surface` and the `edge` of `output` it hides toward, if any.
+pub fn margin_rect<K>(
+    edge: AutoHideEdge,
+    output: Rectangle<i32, K>,
+    surface: Rectangle<i32, K>,
+) -> Option<Rectangle<i32, K>> {
+    let (x, y, w, h) = match edge {
+        AutoHideEdge::Bottom => {
+            let top = surface.loc.y + surface.size.h;
+            let gap = output.loc.y + output.size.h - top;
+            (surface.loc.x, top, surface.size.w, gap)
+        }
+        AutoHideEdge::Top => {
+            let gap = surface.loc.y - output.loc.y;
+            (surface.loc.x, output.loc.y, surface.size.w, gap)
+        }
+        AutoHideEdge::Left => {
+            let gap = surface.loc.x - output.loc.x;
+            (output.loc.x, surface.loc.y, gap, surface.size.h)
+        }
+        AutoHideEdge::Right => {
+            let left = surface.loc.x + surface.size.w;
+            let gap = output.loc.x + output.size.w - left;
+            (left, surface.loc.y, gap, surface.size.h)
+        }
+    };
+    (w > 0 && h > 0).then(|| Rectangle::new((x, y).into(), (w, h).into()))
 }
 
 // ---------------------------------------------------------------------------
@@ -400,19 +512,25 @@ impl AutoHideSurface {
         self.cursor_over || self.touch_held
     }
 
-    /// Compute the render offset for the current animation factor.
-    /// `surface_height` is the layer surface's height from the layer map.
-    /// Factor may go slightly negative during the show animation overshoot
-    /// (bounce effect), producing a small offset in the opposite direction.
-    pub fn render_offset(&self, surface_height: i32) -> (i32, i32) {
-        let factor = self.visibility.factor();
-        if factor == 0.0 {
-            return (0, 0);
-        }
-        let max_offset = surface_height + SHADOW_BUFFER;
-        match self.edge {
-            AutoHideEdge::Bottom => (0, (max_offset as f32 * factor).round() as i32),
-        }
+    /// The render offset for the current animation factor, sliding `surface_size`
+    /// off its edge.
+    pub fn render_offset(&self, surface_size: Size<i32, Logical>) -> (i32, i32) {
+        slide_offset(self.edge, surface_size, self.visibility.factor())
+    }
+}
+
+/// How far a surface of `size` sits off `edge` at `factor` (1 hidden). The show
+/// overshoot makes the factor briefly negative (bounce).
+pub fn slide_offset(edge: AutoHideEdge, size: Size<i32, Logical>, factor: f32) -> (i32, i32) {
+    if factor == 0.0 {
+        return (0, 0);
+    }
+    let travel = ((edge.depth(size) + SHADOW_BUFFER) as f32 * factor).round() as i32;
+    match edge {
+        AutoHideEdge::Bottom => (0, travel),
+        AutoHideEdge::Top => (0, -travel),
+        AutoHideEdge::Left => (-travel, 0),
+        AutoHideEdge::Right => (travel, 0),
     }
 }
 
@@ -642,6 +760,137 @@ mod tests {
             assert_eq!(edge_zone_height(4, false, scale), 4.0);
             assert_eq!(edge_zone_height(0, true, scale), 0.0);
         }
+    }
+
+    #[test]
+    fn every_protocol_edge_is_known_and_slides_off_its_own_side() {
+        let edges = [
+            (0, AutoHideEdge::Bottom, (0, 1)),
+            (1, AutoHideEdge::Top, (0, -1)),
+            (2, AutoHideEdge::Left, (-1, 0)),
+            (3, AutoHideEdge::Right, (1, 0)),
+        ];
+        for (value, edge, (dx, dy)) in edges {
+            assert_eq!(AutoHideEdge::from_protocol(value), Some(edge));
+            // A side bar is 72 wide and spans the output; a bottom or top one is 56 high.
+            let size = if edge.reveal_edge().vertical() {
+                Size::from((72, 1080))
+            } else {
+                Size::from((1920, 56))
+            };
+            assert_eq!(slide_offset(edge, size, 0.0), (0, 0));
+            let depth = if dx != 0 { 72 } else { 56 } + SHADOW_BUFFER;
+            assert_eq!(
+                slide_offset(edge, size, 1.0),
+                (dx * depth, dy * depth),
+                "{edge:?}"
+            );
+            let (ox, oy) = slide_offset(edge, size, -0.05);
+            assert!(
+                ox * dx + oy * dy < 0,
+                "{edge:?}: the bounce overshoots inward"
+            );
+        }
+        assert_eq!(AutoHideEdge::from_protocol(4), None);
+    }
+
+    /// On a second output at x=1920, each strip lies on the bar's own edge of
+    /// that output and runs only beside the bar.
+    #[test]
+    fn edge_zones_lie_on_the_bars_edge_of_its_own_output() {
+        let output = Rectangle::<f64, Logical>::new((1920.0, 0.0).into(), (1280.0, 800.0).into());
+        let zone = |edge, surface: Rectangle<f64, Logical>| EdgeZone {
+            edge: AutoHideEdge::reveal_edge(edge),
+            rect: edge_zone_rect(edge, output, surface, 4.0),
+            ceded: None,
+        };
+        let bottom = zone(
+            AutoHideEdge::Bottom,
+            Rectangle::new((1920.0, 744.0).into(), (1280.0, 56.0).into()),
+        );
+        assert!(bottom.contains((2500.0, 797.0).into()));
+        assert!(!bottom.contains((2500.0, 795.0).into()));
+        assert!(!bottom.contains((1500.0, 797.0).into()), "another output");
+
+        let top = zone(
+            AutoHideEdge::Top,
+            Rectangle::new((2000.0, 0.0).into(), (600.0, 56.0).into()),
+        );
+        assert!(top.contains((2100.0, 3.0).into()));
+        assert!(!top.contains((2100.0, 4.0).into()));
+        assert!(!top.contains((2700.0, 0.0).into()), "past the bar's end");
+
+        let left = zone(
+            AutoHideEdge::Left,
+            Rectangle::new((1920.0, 0.0).into(), (72.0, 800.0).into()),
+        );
+        assert!(left.contains((1920.0, 400.0).into()));
+        assert!(left.contains((1923.9, 799.0).into()));
+        assert!(!left.contains((1924.0, 400.0).into()));
+        assert!(
+            !left.contains((1919.0, 400.0).into()),
+            "the output to the left"
+        );
+        assert!(left.spans(10.0) && !left.spans(800.0));
+
+        let right = zone(
+            AutoHideEdge::Right,
+            Rectangle::new((3128.0, 0.0).into(), (72.0, 800.0).into()),
+        );
+        assert!(right.contains((3199.0, 400.0).into()));
+        assert!(right.contains((3196.0, 0.0).into()));
+        assert!(!right.contains((3195.0, 400.0).into()));
+        assert!(!right.contains((3200.0, 400.0).into()));
+    }
+
+    /// Over a fullscreen window the Halo keeps the stretch of the top edge above
+    /// its pill; a top bar reveals from the rest, so one push never shows both.
+    #[test]
+    fn a_top_bar_leaves_the_halos_stretch_of_the_edge_to_the_halo() {
+        let output = Rectangle::<f64, Logical>::new((0.0, 0.0).into(), (1920.0, 1080.0).into());
+        let surface = Rectangle::new((0.0, 0.0).into(), (1920.0, 56.0).into());
+        let thickness = edge_zone_height(4, true, 1.5);
+        let zone = EdgeZone {
+            edge: Edge::Top,
+            rect: edge_zone_rect(AutoHideEdge::Top, output, surface, thickness),
+            ceded: Some((760.0, 1160.0)),
+        };
+        assert!(zone.contains((100.0, 0.5).into()));
+        assert!(zone.contains((1919.0, 0.5).into()));
+        assert!(!zone.contains((760.0, 0.5).into()), "the Halo's");
+        assert!(!zone.contains((1159.0, 0.5).into()), "the Halo's");
+        assert!(zone.contains((1160.0, 0.5).into()));
+        assert!(
+            !zone.contains((100.0, 0.7).into()),
+            "one physical pixel in fullscreen"
+        );
+    }
+
+    #[test]
+    fn a_floating_bar_keeps_its_margin_to_its_own_edge() {
+        let output = Rectangle::<i32, Logical>::new((1920, 0).into(), (1280, 800).into());
+        let at = |x, y, w, h| Rectangle::<i32, Logical>::new((x, y).into(), (w, h).into());
+        assert_eq!(
+            margin_rect(AutoHideEdge::Bottom, output, at(1920, 734, 1280, 56)),
+            Some(at(1920, 790, 1280, 10))
+        );
+        assert_eq!(
+            margin_rect(AutoHideEdge::Top, output, at(1920, 10, 1280, 56)),
+            Some(at(1920, 0, 1280, 10))
+        );
+        assert_eq!(
+            margin_rect(AutoHideEdge::Left, output, at(1930, 0, 72, 800)),
+            Some(at(1920, 0, 10, 800))
+        );
+        assert_eq!(
+            margin_rect(AutoHideEdge::Right, output, at(3118, 0, 72, 800)),
+            Some(at(3190, 0, 10, 800))
+        );
+        assert_eq!(
+            margin_rect(AutoHideEdge::Left, output, at(1920, 0, 72, 800)),
+            None,
+            "flush"
+        );
     }
 
     /// A touch has no pointer to leave with: its hold alone keeps a swiped-in

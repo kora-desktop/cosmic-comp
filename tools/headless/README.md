@@ -169,5 +169,7 @@ flat-colour window that asks to be maximized, and measures where the window show
 writes the compositor's `maximized_padding` key: 0, 24 px, off, the theme's default, then 16 and
 40 px with the bar on the left. It fails unless the window is configured and drawn inside the
 bar's work area less the padding on every side, follows each write without being remapped, and a
-fullscreen window ignores the key. Inside a Kora workspace it serves a stand-in registry from
+fullscreen window ignores the key. Then it puts an auto-hiding bar on each edge in turn: hidden,
+the bar reserves nothing, so the maximized window fills the output less the padding; the pointer
+at that edge shows the bar, and leaving it hides the bar again. Inside a Kora workspace it serves a stand-in registry from
 `tools/grants-check` (`GRANTS_CHECK` names a prebuilt one) so the window's realm is on screen.

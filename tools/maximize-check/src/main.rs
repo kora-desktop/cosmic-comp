@@ -1,9 +1,10 @@
-//! `maximize-check show EDGE [--fullscreen]`: a panel-like layer bar on EDGE (bottom, top, left
-//! or right) that reserves its width, and a flat-colour window that asks to be maximized (or
-//! fullscreen) before its first commit. Prints `configure W H` each time the window is drawn at
-//! a size the compositor gave it.
+//! `maximize-check show EDGE [--fullscreen] [--auto-hide]`: a panel-like layer bar on EDGE
+//! (bottom, top, left or right) that reserves its width, and a flat-colour window that asks to be
+//! maximized (or fullscreen) before its first commit. Prints `configure W H` each time the window
+//! is drawn at a size the compositor gave it. With `--auto-hide` the bar reserves nothing and
+//! asks the compositor to hide it off EDGE, as the Kora panel does, printing `visible 0|1`.
 //!
-//! `maximize-check rect SHOT`: `x y w h` of the window's colour in a capture (PPM).
+//! `maximize-check rect SHOT [bar]`: `x y w h` of the window's (or bar's) colour in a capture (PPM).
 
 use std::{
     fs::File,
@@ -19,6 +20,20 @@ use wayland_client::{
 };
 use wayland_protocols::xdg::shell::client::{xdg_surface, xdg_toplevel, xdg_wm_base};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
+
+#[allow(non_upper_case_globals, non_camel_case_types, clippy::all)]
+mod auto_hide {
+    use wayland_client;
+    use wayland_client::protocol::*;
+    pub mod __interfaces {
+        use wayland_client::backend as wayland_backend;
+        use wayland_client::protocol::__interfaces::*;
+        wayland_scanner::generate_interfaces!("../../resources/protocols/layer-auto-hide.xml");
+    }
+    use self::__interfaces::*;
+    wayland_scanner::generate_client_code!("../../resources/protocols/layer-auto-hide.xml");
+}
+use auto_hide::{layer_auto_hide_manager_v1, layer_auto_hide_v1};
 
 const BAR: [u8; 3] = [0x20, 0xc0, 0x40];
 const WINDOW: [u8; 3] = [0x20, 0x50, 0xe0];
@@ -80,24 +95,42 @@ impl App {
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
-        Some("show") if args.len() >= 2 => show(&args[1], args.iter().any(|a| a == "--fullscreen")),
-        Some("rect") if args.len() == 2 => rect(&args[1]),
+        Some("show") if args.len() >= 2 => show(
+            &args[1],
+            args.iter().any(|a| a == "--fullscreen"),
+            args.iter().any(|a| a == "--auto-hide"),
+        ),
+        Some("rect") if args.len() == 2 => rect(&args[1], WINDOW),
+        Some("rect") if args.len() == 3 && args[2] == "bar" => rect(&args[1], BAR),
         _ => {
             eprintln!(
-                "usage: maximize-check show bottom|top|left|right [--fullscreen] | rect SHOT"
+                "usage: maximize-check show bottom|top|left|right [--fullscreen] [--auto-hide] | rect SHOT [bar]"
             );
             exit(2);
         }
     }
 }
 
-fn show(edge: &str, fullscreen: bool) {
+fn show(edge: &str, fullscreen: bool, auto_hide: bool) {
+    use layer_auto_hide_v1::Edge;
     use zwlr_layer_surface_v1::Anchor;
-    let (anchor, vertical) = match edge {
-        "bottom" => (Anchor::Bottom | Anchor::Left | Anchor::Right, false),
-        "top" => (Anchor::Top | Anchor::Left | Anchor::Right, false),
-        "left" => (Anchor::Left | Anchor::Top | Anchor::Bottom, true),
-        "right" => (Anchor::Right | Anchor::Top | Anchor::Bottom, true),
+    let (anchor, vertical, hide_edge) = match edge {
+        "bottom" => (
+            Anchor::Bottom | Anchor::Left | Anchor::Right,
+            false,
+            Edge::Bottom,
+        ),
+        "top" => (Anchor::Top | Anchor::Left | Anchor::Right, false, Edge::Top),
+        "left" => (
+            Anchor::Left | Anchor::Top | Anchor::Bottom,
+            true,
+            Edge::Left,
+        ),
+        "right" => (
+            Anchor::Right | Anchor::Top | Anchor::Bottom,
+            true,
+            Edge::Right,
+        ),
         _ => {
             eprintln!("unknown edge {edge}");
             exit(2);
@@ -116,7 +149,11 @@ fn show(edge: &str, fullscreen: bool) {
     let layer = layer_shell.get_layer_surface(
         &bar,
         None,
-        zwlr_layer_shell_v1::Layer::Top,
+        if auto_hide {
+            zwlr_layer_shell_v1::Layer::Overlay
+        } else {
+            zwlr_layer_shell_v1::Layer::Top
+        },
         "maximize-check-bar".into(),
         &qh,
         (),
@@ -127,7 +164,19 @@ fn show(edge: &str, fullscreen: bool) {
     } else {
         layer.set_size(0, BAR_SIZE);
     }
-    layer.set_exclusive_zone(BAR_SIZE as i32);
+    if auto_hide {
+        // Always mode with a 4px edge zone, reserving nothing.
+        let manager: layer_auto_hide_manager_v1::LayerAutoHideManagerV1 =
+            globals.bind(&qh, 1..=2, ()).expect("layer auto-hide");
+        manager.get_auto_hide(&bar, &qh, ()).set_auto_hide(
+            hide_edge,
+            4,
+            layer_auto_hide_v1::Mode::Always,
+        );
+        layer.set_exclusive_zone(0);
+    } else {
+        layer.set_exclusive_zone(BAR_SIZE as i32);
+    }
     bar.commit();
 
     let window = compositor.create_surface(&qh, ());
@@ -158,8 +207,8 @@ fn show(edge: &str, fullscreen: bool) {
     }
 }
 
-/// The bounding box of the window's colour in a binary PPM.
-fn rect(path: &str) {
+/// The bounding box of `colour` in a binary PPM.
+fn rect(path: &str, colour: [u8; 3]) {
     let mut data = Vec::new();
     File::open(path)
         .and_then(|mut f| f.read_to_end(&mut data))
@@ -167,7 +216,7 @@ fn rect(path: &str) {
     let (width, pixels) = ppm(&data);
     let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
     for (i, p) in pixels.chunks_exact(3).enumerate() {
-        if p == WINDOW {
+        if p == colour {
             let (x, y) = (i % width, i / width);
             x0 = x0.min(x);
             y0 = y0.min(y);
@@ -322,3 +371,19 @@ delegate_noop!(App: ignore wl_shm_pool::WlShmPool);
 delegate_noop!(App: ignore wl_buffer::WlBuffer);
 delegate_noop!(App: ignore wl_surface::WlSurface);
 delegate_noop!(App: ignore zwlr_layer_shell_v1::ZwlrLayerShellV1);
+delegate_noop!(App: ignore layer_auto_hide_manager_v1::LayerAutoHideManagerV1);
+
+impl Dispatch<layer_auto_hide_v1::LayerAutoHideV1, ()> for App {
+    fn event(
+        _: &mut Self,
+        _: &layer_auto_hide_v1::LayerAutoHideV1,
+        event: layer_auto_hide_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        let layer_auto_hide_v1::Event::VisibilityChanged { visible } = event;
+        println!("visible {visible}");
+        std::io::stdout().flush().ok();
+    }
+}

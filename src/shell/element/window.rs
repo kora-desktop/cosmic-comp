@@ -184,6 +184,8 @@ pub struct CosmicWindowInternal {
     pointer_over_window: AtomicBool,
     /// Swiped in from the top edge by touch: shown until a touch lands elsewhere.
     touch_revealed: AtomicBool,
+    /// A top auto-hide bar on this output reveals from the top edge beside the Halo.
+    top_edge_shared: AtomicBool,
     introduced: Mutex<Option<std::time::Instant>>,
     /// A header-only wrapper anchored to an output, not to the fullscreen client geometry.
     fullscreen_output: Option<Mutex<Output>>,
@@ -931,6 +933,7 @@ impl CosmicWindow {
                 pointer_entered: AtomicU8::new(0),
                 pointer_over_window: AtomicBool::new(false),
                 touch_revealed: AtomicBool::new(false),
+                top_edge_shared: AtomicBool::new(false),
                 introduced: Mutex::new(None),
                 fullscreen_output: fullscreen_output.map(Mutex::new),
                 last_title: Mutex::new(last_title),
@@ -1120,6 +1123,7 @@ impl CosmicWindow {
                             || p.touch_revealed.load(Ordering::SeqCst)
                             || p.menu_open.load(Ordering::SeqCst)
                             || p.commands_open.load(Ordering::SeqCst),
+                        p.top_edge_shared.load(Ordering::SeqCst),
                     )
                     && surface_type.contains(WindowSurfaceType::TOPLEVEL))
                 .then(|| {
@@ -1189,6 +1193,21 @@ impl CosmicWindow {
         self.0.with_program(|p| {
             p.fullscreen_output.is_some() && p.uses_halo_header() && !is_surface_embedded(&p.window)
         })
+    }
+
+    /// The fullscreen Halo pill's `[left, right)` in output-local x.
+    pub fn fullscreen_halo_span(&self) -> Option<(f64, f64)> {
+        if !self.0.with_program(|p| p.fullscreen_output.is_some()) {
+            return None;
+        }
+        self.0
+            .backdrop_bounds()
+            .map(|pill| (f64::from(pill.x), f64::from(pill.x + pill.width)))
+    }
+
+    pub fn set_top_edge_shared(&self, shared: bool) {
+        self.0
+            .with_program(|p| p.top_edge_shared.store(shared, Ordering::SeqCst));
     }
 
     pub fn touch_revealed(&self) -> bool {

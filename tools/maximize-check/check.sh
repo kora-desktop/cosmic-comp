@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # A maximized window keeps the `maximized_padding` space on every side, inside the work area a
 # bar on any edge leaves, and follows a change to the key at once. Off, it meets the work area;
-# a fullscreen window ignores the key. Runs CC_BIN in tools/headless at 1920x1080, scale 1.
+# a fullscreen window ignores the key. An auto-hiding bar on any edge reserves nothing, shows when
+# the pointer reaches its edge and hides when it leaves. Runs CC_BIN in tools/headless at
+# 1920x1080, scale 1.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 hl=$here/../headless/headless.sh
@@ -76,3 +78,38 @@ start left --fullscreen
 expect fullscreen "0 0 1920 1080"
 stop
 echo "maximized padding: ok"
+
+# bar NAME WANT: the bar's colour covers WANT ("none" while it is hidden).
+bar() {
+	local got
+	"$hl" shot "$CC_STATE/$1.ppm"
+	got=$("$bin" rect "$CC_STATE/$1.ppm" bar)
+	echo "$1: bar $got"
+	[ "$got" = "$2" ] || { echo "$1: FAILED, want bar $2" >&2; tail -n5 "$log" >&2; exit 1; }
+}
+
+padding '(enabled: true, size: Some(16))'
+for edge in bottom top left right; do
+	case $edge in
+	bottom) at="960 1079" shown="0 1028 1920 52" ;;
+	top) at="960 0" shown="0 0 1920 52" ;;
+	left) at="0 540" shown="0 0 52 1080" ;;
+	right) at="1919 540" shown="1868 0 52 1080" ;;
+	esac
+	"$hl" move 960 540
+	start "$edge" --auto-hide
+	# Hidden, it leaves the whole output to the maximized window, less the padding.
+	expect "auto-$edge" "16 16 1888 1048"
+	bar "auto-$edge-hidden" none
+	# shellcheck disable=SC2086
+	"$hl" move $at
+	sleep 1.2
+	bar "auto-$edge-shown" "$shown"
+	"$hl" move 960 540
+	sleep 1.5
+	bar "auto-$edge-left" none
+	grep -q '^visible 1$' "$log" && grep -q '^visible 0$' "$log" ||
+		{ echo "auto-$edge: FAILED, no visibility events" >&2; exit 1; }
+	stop
+done
+echo "auto-hide on every edge: ok"
