@@ -1,3 +1,10 @@
+# [2.1.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.0.1...v2.1.0) (2026-11-16)
+
+
+### Features
+
+* let people set the space around maximized windows ([639753b](https://github.com/kora-desktop/cosmic-comp/commit/639753b6375a1e81752d21e1e561972b61364c2d))
+
 ## [2.0.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.0.0...v2.0.1) (2026-11-16)
 
 
