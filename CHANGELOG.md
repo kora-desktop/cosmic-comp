@@ -1,3 +1,10 @@
+## [2.2.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.2.0...v2.2.1) (2026-11-16)
+
+
+### Bug Fixes
+
+* **recording:** end a recording the engine no longer has ([da9f7cf](https://github.com/kora-desktop/cosmic-comp/commit/da9f7cf652abe40037eb5399da72a5add151f61f))
+
 # [2.2.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.1.0...v2.2.0) (2026-11-16)
 
 
