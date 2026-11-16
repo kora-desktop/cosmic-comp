@@ -321,20 +321,16 @@ fn begin(
         report(state, Err("HOME is not set".into()));
         return;
     };
-    // It waits here while its preview is up, as a screenshot does.
-    if let Err(err) = std::fs::create_dir_all(&destination.pending) {
+    if let Err(err) = std::fs::create_dir_all(&destination.save_to) {
         report(state, Err(err.to_string()));
         return;
     }
-    if caller == Caller::Game && short_of_space(&destination.pending) {
+    if caller == Caller::Game && short_of_space(&destination.save_to) {
         report(state, Err("No space left for a recording".into()));
         return;
     }
-    let path = destination.pending.join(format!(
-        "{}.mp4",
-        captures::capture_stem(CaptureKind::Recording, &jiff::Zoned::now())
-    ));
-    write_poster(state, surface, &path);
+    let path = destination.partial(&jiff::Zoned::now());
+    write_poster(state, surface, &destination.poster_of(&path));
 
     surface.set_recording(Recording::Starting);
     refresh_halo(state, surface);
@@ -414,8 +410,11 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
 
 /// The window as the recording starts, for the preview to show. Nothing is
 /// lost without it: the preview draws a stand-in.
-fn write_poster(state: &mut State, surface: &CosmicSurface, recording: &Path) {
-    let poster = poster_of(recording);
+fn write_poster(state: &mut State, surface: &CosmicSurface, poster: &Path) {
+    let poster = poster.to_path_buf();
+    if let Some(dir) = poster.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
     let file = match std::fs::File::create(&poster) {
         Ok(file) => file,
         Err(err) => return warn!(?err, "Failed to create the recording's poster"),
@@ -428,10 +427,6 @@ fn write_poster(state: &mut State, surface: &CosmicSurface, recording: &Path) {
     });
 }
 
-fn poster_of(recording: &Path) -> PathBuf {
-    recording.with_extension("poster.png")
-}
-
 /// The recording is on disk: hand it to the preview, or file it and say so.
 fn finished(state: &mut State, surface: &CosmicSurface, path: &str, since: Instant) {
     surface.set_recording(Recording::Idle);
@@ -440,7 +435,7 @@ fn finished(state: &mut State, surface: &CosmicSurface, path: &str, since: Insta
     let Some(destination) =
         captures::Destination::for_surface(state, surface, CaptureKind::Recording)
     else {
-        return announce(state, &path);
+        return announce(state, &finish(&path));
     };
     let filing = Filing {
         destination,
@@ -504,13 +499,22 @@ struct Filing {
 
 impl Filing {
     fn handoff(&self, path: &Path) -> (captures::Handoff, Option<PathBuf>) {
-        let poster = Some(poster_of(path)).filter(|p| p.is_file());
+        let poster = Some(self.destination.poster_of(path)).filter(|p| p.is_file());
+        let path = finish(path);
         let length = u64::try_from(self.since.elapsed().as_millis()).unwrap_or(u64::MAX);
         let handoff = self
             .destination
-            .handoff(path, &self.app, poster.as_deref(), Some(length));
+            .handoff(&path, &self.app, poster.as_deref(), Some(length));
         (handoff, poster)
     }
+}
+
+/// The finished recording under its own name; the partial one if it cannot be renamed.
+fn finish(path: &Path) -> PathBuf {
+    captures::finish_partial(path).unwrap_or_else(|err| {
+        warn!(?err, "Failed to name the finished recording");
+        path.to_path_buf()
+    })
 }
 
 /// This compositor's recordings not yet ended, by id. Outlives the window, which
@@ -628,10 +632,13 @@ mod tests {
             false,
             None,
         );
-        std::fs::create_dir_all(&destination.pending).unwrap();
-        let path = destination.pending.join("Screen Recording.mp4");
+        let mut destination = destination;
+        destination.posters = home.join("posters");
+        std::fs::create_dir_all(&destination.save_to).unwrap();
+        std::fs::create_dir_all(&destination.posters).unwrap();
+        let path = destination.save_to.join("Screen Recording.mp4.part");
         std::fs::write(&path, b"video").unwrap();
-        std::fs::write(poster_of(&path), b"poster").unwrap();
+        std::fs::write(destination.poster_of(&path), b"poster").unwrap();
         unfiled.started(
             id.to_owned(),
             Filing {
@@ -656,12 +663,20 @@ mod tests {
         let expected = home.join("Workspaces/gameframe/Captures/Recordings");
         assert_eq!(handoff.save_to, expected);
         assert_eq!(handoff.capture.app.as_deref(), Some("A Game"));
-        assert_eq!(poster, Some(poster_of(&path)));
+        assert_eq!(
+            poster,
+            Some(home.join("posters/Screen Recording.mp4.poster.png"))
+        );
+        assert_eq!(
+            handoff.path,
+            expected.join("Screen Recording.mp4"),
+            "named once it ends"
+        );
+        assert!(!path.exists(), "no partial file stays");
 
         let filed = captures::file_into(&handoff.path, &handoff.save_to).unwrap();
-        assert_eq!(filed, expected.join("Screen Recording.mp4"));
+        assert_eq!(filed, handoff.path, "already saved, it stays put");
         assert!(filed.is_file());
-        assert!(!path.exists(), "nothing stays in the waiting room");
         std::fs::remove_dir_all(&home).unwrap();
     }
 

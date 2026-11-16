@@ -166,9 +166,9 @@ pub fn screenshot_window(state: &mut State, surface: &CosmicSurface) {
         .name("screenshot-encode".into())
         .spawn(move || match encode(&capture) {
             Ok(png) => {
-                // The preview holds it until it is wanted; without one it is filed at once.
+                // Saved at once; the preview only offers what to do with it.
                 let stem = captures::capture_stem(CaptureKind::Screenshot, &jiff::Zoned::now());
-                let saved = destination.and_then(|d| save(&d.pending, &stem, &png));
+                let saved = destination.and_then(|d| save(&d.save_to, &stem, &png));
                 let app = app_name(&app_id).unwrap_or(capture.title);
                 let _ = tx.send(Encoded { png, saved, app });
             }
