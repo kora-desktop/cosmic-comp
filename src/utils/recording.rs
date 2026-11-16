@@ -7,12 +7,19 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use tracing::warn;
+use calloop::{
+    RegistrationToken,
+    timer::{TimeoutAction, Timer},
+};
+use tracing::{info, warn};
 
 use crate::{
-    dbus::notifications::{Notification, Tone},
+    dbus::{
+        capture::{StopFailure, StopReply},
+        notifications::{Notification, Tone},
+    },
     fl,
     shell::element::{CosmicSurface, surface::Recording},
     state::State,
@@ -30,47 +37,158 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
         // A request is on the bus; the answer decides.
         Recording::Starting => {}
         Recording::Idle => start(state, surface),
+        // A second press while its stop is on the bus would only be refused.
+        Recording::Watched { id } | Recording::Active { id, .. }
+            if state.common.recording_stops.contains(&id) => {}
         // The app that started it hears RecordingStopped and files the result.
         Recording::Watched { id } => {
             let surface = surface.clone();
-            state
-                .common
-                .dbus_state
-                .stop_recording(id, move |state, reply| {
-                    if let Err(error) = reply {
-                        warn!(%error, "Failed to stop another app's recording");
-                        notify(state, fl!("recording-failed"), error);
-                    }
-                    surface.set_recording(Recording::Idle);
-                    refresh_halo(state, &surface);
-                });
+            stop(state, id, move |state, reply| {
+                if let Err(StopFailure::Failed(error)) = reply {
+                    warn!(%error, "Failed to stop another app's recording");
+                    notify(state, fl!("recording-failed"), error.clone());
+                }
+                surface.set_recording(Recording::Idle);
+                refresh_halo(state, &surface);
+            });
         }
         Recording::Active { id, since, .. } => {
             let surface = surface.clone();
             let stopping = id.clone();
-            state
-                .common
-                .dbus_state
-                .stop_recording(id, move |state, reply| {
-                    // The recorder's RecordingStopped may have landed first
-                    // and already cleared and announced it; one toast, not two.
-                    if !carries(&surface, &stopping) {
-                        return;
+            stop(state, id, move |state, reply| {
+                // The recorder's RecordingStopped may have landed first
+                // and already cleared and announced it; one toast, not two.
+                if !carries(&surface, &stopping) {
+                    return;
+                }
+                match reply {
+                    Ok(path) => {
+                        state.common.unfiled_recordings.take(&stopping);
+                        finished(state, &surface, path, since);
                     }
-                    match reply {
-                        Ok(path) => {
-                            state.common.unfiled_recordings.take(&stopping);
-                            finished(state, &surface, &path, since);
-                        }
-                        Err(error) => {
-                            warn!(%error, "Failed to stop the recording");
-                            surface.set_recording(Recording::Idle);
-                            refresh_halo(state, &surface);
-                            notify(state, fl!("recording-failed"), error);
-                        }
+                    // It ended unannounced; there is no file to point at.
+                    Err(StopFailure::NoSuchRecording) => {
+                        surface.set_recording(Recording::Idle);
+                        refresh_halo(state, &surface);
                     }
-                });
+                    Err(StopFailure::Failed(error)) => {
+                        warn!(%error, "Failed to stop the recording");
+                        surface.set_recording(Recording::Idle);
+                        refresh_halo(state, &surface);
+                        notify(state, fl!("recording-failed"), error.clone());
+                    }
+                }
+            });
         }
+    }
+}
+
+/// The engine promises an answer within about 21 s; past this a stop is
+/// given up, so a silent engine cannot keep the next press ignored.
+const STOP_ANSWER_WITHIN: Duration = Duration::from_secs(30);
+
+type StopWaiter = Box<dyn FnOnce(&mut State, &StopReply)>;
+
+/// Stop `id` once however many ask while it is on the bus; each asker hears
+/// the one answer.
+fn stop(state: &mut State, id: String, done: impl FnOnce(&mut State, &StopReply) + 'static) {
+    if !state.common.recording_stops.join(&id, Box::new(done)) {
+        return;
+    }
+    let late = id.clone();
+    let timer = state
+        .common
+        .event_loop_handle
+        .insert_source(
+            Timer::from_duration(STOP_ANSWER_WITHIN),
+            move |_, _, state| {
+                warn!(id = %late, "The recorder did not answer a stop");
+                // This timer goes by returning Drop, not through `answer`.
+                state.common.recording_stops.set_timer(&late, None);
+                let reply = Err(StopFailure::Failed("the recorder did not answer".into()));
+                answer(state, &late, &reply);
+                TimeoutAction::Drop
+            },
+        )
+        .ok();
+    state.common.recording_stops.set_timer(&id, timer);
+    state
+        .common
+        .dbus_state
+        .stop_recording(id.clone(), move |state, reply| answer(state, &id, &reply));
+}
+
+fn answer(state: &mut State, id: &str, reply: &StopReply) {
+    let (waiters, timer) = state.common.recording_stops.finish(id);
+    if let Some(timer) = timer {
+        state.common.event_loop_handle.remove(timer);
+    }
+    if *reply == Err(StopFailure::NoSuchRecording) {
+        info!(%id, "The recorder has no such recording; taking it as ended");
+        state.common.unfiled_recordings.take(id);
+        state.common.dbus_state.forget_recording(id.to_owned());
+    }
+    for waiter in waiters {
+        waiter(state, reply);
+    }
+}
+
+/// Stops on the bus, by recording id.
+#[derive(Default)]
+pub struct RecordingStops(InFlight<StopWaiter>);
+
+impl std::fmt::Debug for RecordingStops {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_set().entries(self.0.0.keys()).finish()
+    }
+}
+
+impl RecordingStops {
+    fn contains(&self, id: &str) -> bool {
+        self.0.0.contains_key(id)
+    }
+
+    fn join(&mut self, id: &str, waiter: StopWaiter) -> bool {
+        self.0.join(id, waiter)
+    }
+
+    fn set_timer(&mut self, id: &str, timer: Option<RegistrationToken>) {
+        if let Some(pending) = self.0.0.get_mut(id) {
+            pending.1 = timer;
+        }
+    }
+
+    fn finish(&mut self, id: &str) -> (Vec<StopWaiter>, Option<RegistrationToken>) {
+        self.0.finish(id)
+    }
+}
+
+/// Requests on the bus by id, each with whoever waits on it and its deadline.
+struct InFlight<W>(HashMap<String, (Vec<W>, Option<RegistrationToken>)>);
+
+impl<W> Default for InFlight<W> {
+    fn default() -> Self {
+        Self(HashMap::new())
+    }
+}
+
+impl<W> InFlight<W> {
+    /// Wait on `id`; true when nothing was, so the request has to be sent.
+    fn join(&mut self, id: &str, waiter: W) -> bool {
+        match self.0.get_mut(id) {
+            Some((waiters, _)) => {
+                waiters.push(waiter);
+                false
+            }
+            None => {
+                self.0.insert(id.to_owned(), (vec![waiter], None));
+                true
+            }
+        }
+    }
+
+    fn finish(&mut self, id: &str) -> (Vec<W>, Option<RegistrationToken>) {
+        self.0.remove(id).unwrap_or_default()
     }
 }
 
@@ -116,23 +234,45 @@ pub fn stop_all(state: &mut State, done: impl FnOnce(Result<(), String>) + 'stat
         done(Ok(()));
         return;
     }
-    let left = std::rc::Rc::new(std::cell::RefCell::new((ids.len(), Ok(()), Some(done))));
+    let tally = std::rc::Rc::new(std::cell::RefCell::new(Tally::new(ids.len())));
+    let done = std::rc::Rc::new(std::cell::Cell::new(Some(done)));
     for id in ids {
-        let left = left.clone();
-        state.common.dbus_state.stop_recording(id, move |_, reply| {
-            let mut left = left.borrow_mut();
-            left.0 -= 1;
-            if let Err(error) = reply {
-                warn!(%error, "Failed to stop a recording");
-                left.1 = Err(failure_code(&error).to_owned());
-            }
-            if left.0 == 0 {
-                let result = std::mem::replace(&mut left.1, Ok(()));
-                if let Some(done) = left.2.take() {
-                    done(result);
-                }
+        let tally = tally.clone();
+        let done = done.clone();
+        // A stop already on the bus answers this one too.
+        stop(state, id, move |_, reply| {
+            if let Some(result) = tally.borrow_mut().add(reply)
+                && let Some(done) = done.take()
+            {
+                done(result);
             }
         });
+    }
+}
+
+/// The answers to [`stop_all`]'s stops, until the last one is in.
+struct Tally {
+    left: usize,
+    result: Result<(), String>,
+}
+
+impl Tally {
+    fn new(left: usize) -> Self {
+        Self {
+            left,
+            result: Ok(()),
+        }
+    }
+
+    /// The outcome once every stop has answered. One the engine no longer has
+    /// is over, which is what was asked.
+    fn add(&mut self, reply: &StopReply) -> Option<Result<(), String>> {
+        if let Err(StopFailure::Failed(error)) = reply {
+            warn!(%error, "Failed to stop a recording");
+            self.result = Err(failure_code(error).to_owned());
+        }
+        self.left = self.left.saturating_sub(1);
+        (self.left == 0).then(|| std::mem::replace(&mut self.result, Ok(())))
     }
 }
 
@@ -536,6 +676,37 @@ mod tests {
         assert!(unfiled.take("rec-1").is_none());
         assert!(unfiled.take("kora-capture-7").is_none());
         std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    // A second Stop while the first is on the bus must not reach the engine,
+    // which already let go of the id and would answer "no recording".
+    #[test]
+    fn a_stop_already_on_the_bus_takes_every_later_asker() {
+        let mut stops = InFlight::default();
+        assert!(stops.join("rec-1", "halo"), "the first sends");
+        assert!(!stops.join("rec-1", "halo again"), "a second press waits");
+        assert!(!stops.join("rec-1", "game mode"), "so does game mode");
+        assert!(stops.join("rec-2", "halo"), "another recording is its own");
+
+        let (waiters, _) = stops.finish("rec-1");
+        assert_eq!(waiters, ["halo", "halo again", "game mode"]);
+        assert!(stops.finish("rec-1").0.is_empty(), "answered once");
+        assert!(stops.join("rec-1", "halo"), "a later press sends again");
+    }
+
+    #[test]
+    fn game_mode_s_stop_of_a_recording_the_engine_lost_succeeds() {
+        let mut tally = Tally::new(2);
+        assert_eq!(tally.add(&Err(StopFailure::NoSuchRecording)), None);
+        assert_eq!(tally.add(&Ok("/r.mp4".into())), Some(Ok(())));
+
+        let mut tally = Tally::new(2);
+        let _ = tally.add(&Err(StopFailure::Failed("No space left".into())));
+        assert_eq!(
+            tally.add(&Err(StopFailure::NoSuchRecording)),
+            Some(Err("no-space".into())),
+            "a real failure still says so"
+        );
     }
 
     #[test]

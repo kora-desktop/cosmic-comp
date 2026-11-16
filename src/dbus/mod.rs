@@ -38,6 +38,8 @@ struct DBusStateInner {
     session_conn: zbus::Result<zbus::Connection>,
     system_conn: zbus::Result<zbus::Connection>,
     a11y_keyboard_monitor: RefCell<Option<a11y_keyboard_monitor::A11yKeyboardMonitorState>>,
+    /// Tells the game-mode mirror of recordings to drop one the engine lost.
+    forget_recording: RefCell<Option<futures_channel::mpsc::UnboundedSender<String>>>,
 }
 
 impl DBusState {
@@ -51,6 +53,7 @@ impl DBusState {
             session_conn,
             system_conn,
             a11y_keyboard_monitor: RefCell::new(None),
+            forget_recording: RefCell::new(None),
         }));
         evlh.insert_source(source, |_, _, _| {}).unwrap();
         let state_clone = state.clone();
