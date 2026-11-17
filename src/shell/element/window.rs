@@ -2330,7 +2330,10 @@ impl CosmicWindowInternal {
             .square_top(win.squares_top_corners())
             .window_width(win.window.geometry().size.w as f32)
             .panel(win.window.has_parent())
-            .run(runs::halo_run(&win.window), Message::RunChip);
+            .run(runs::halo_run(&win.window), Message::RunChip)
+            .app_identity(icetron_p::icetron_themes::AppIdentityId::from_app_id(
+                &win.window.app_id(),
+            ));
         let app = win.desktop_app.lock().unwrap().clone();
         if let Some(app) = app.as_ref() {
             if let Some(name) = &app.name {

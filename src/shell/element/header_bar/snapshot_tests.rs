@@ -2065,3 +2065,236 @@ fn the_integrated_header_cuts_a_long_run_label_clear_of_its_controls() {
         );
     }
 }
+
+/// Kora's first-party window ids, the name each had before design #352 and the one it has now.
+const FIRST_PARTY: [(&str, &str, &str); 15] = [
+    ("inc.kora.Chord", "Chord", "Chat"),
+    ("slate", "Slate", "Edit"),
+    ("inc.kora.explorer", "Explorer", "Files"),
+    ("inc.kora.Discover", "Discover", "Store"),
+    ("inc.kora.Intelligence", "Memory", "Remember"),
+    ("kora-processes", "Activity", "Monitor"),
+    ("inc.kora.Hive", "Hive", "Workspaces"),
+    ("inc.kora.grid", "GameFrame", "Play"),
+    ("inc.kora.mail-suite", "Mail", "Organize"),
+    ("inc.kora.calendar", "Calendar", "Organize"),
+    ("inc.kora.Settings", "Kora Settings", "Settings"),
+    ("inc.kora.Settings.Network", "Kora Settings", "Settings"),
+    ("kora-term", "Terminal", "Terminal"),
+    ("inc.kora.GetStarted", "Get Started", "Get Started"),
+    ("kora-get-started", "Get Started", "Get Started"),
+];
+
+/// A Kora theme with design #352's app hues: tinted tiles and a hue per identity.
+fn toned_theme(dark: bool) -> CompTheme {
+    let mut tokens = DEFAULT_THEME_PAIR.load(dark);
+    tokens.window_header_style = WindowHeaderStyle::Integrated;
+    tokens.app_icon_tint_percentage = Some(0.12);
+    tokens.app_color_chord = Some(Color::from_rgb8(0x75, 0xb5, 0xfa));
+    tokens.app_color_hive = Some(Color::from_rgb8(0x7b, 0xcb, 0xd0));
+    CompTheme::new(Arc::new(tokens), dark)
+}
+
+/// The mark's tint, and the frame with the cache its text still points into.
+fn integrated_mark(
+    theme: &CompTheme,
+    app_id: &str,
+    name: Option<&str>,
+) -> (Color, Renderer, user_interface::Cache) {
+    let identity = AppIdentityId::from_app_id(app_id);
+    let (mut renderer, _, cache) = render(theme, 1000.0, 1.0, |header| {
+        let header = header
+            .title("Home")
+            .app_identity(identity)
+            .app_icon(AppIcon::Svg {
+                bytes: TEST_ICON,
+                symbolic: true,
+            })
+            .on_close(());
+        match name {
+            Some(name) => header.app_name(name),
+            None => header,
+        }
+    });
+    (glyph_tints(&mut renderer)[0], renderer, cache)
+}
+
+/// Every window Kora ships, under its own id, an old name or a legacy id, is one identity
+/// named as design #352 names it.
+#[test]
+fn first_party_windows_resolve_to_the_design_names() {
+    for (app_id, old, new) in FIRST_PARTY {
+        let app = AppIdentityId::from_app_id(app_id).unwrap_or_else(|| panic!("{app_id}"));
+        assert_eq!(app.label(), new, "{app_id}");
+        if old != "Calendar" && old != "Mail" {
+            assert_eq!(AppIdentityId::from_app_id(old), Some(app), "{old}");
+        }
+    }
+    for legacy in [
+        "explorer",
+        "chord",
+        "gameframe",
+        "game-frame",
+        "discover",
+        "memory",
+    ] {
+        assert!(AppIdentityId::from_app_id(legacy).is_some(), "{legacy}");
+    }
+}
+
+/// Third-party ids, Kora apps without a design identity and HumainOS apps keep plain chrome.
+#[test]
+fn other_windows_have_no_identity() {
+    for app_id in [
+        "org.mozilla.firefox",
+        "google-chrome",
+        "steam_app_570",
+        "org.gnome.Nautilus",
+        "code",
+        "foot",
+        "com.onepassword.OnePassword",
+        "explorer.exe",
+        "org.telegram.desktop",
+        "Zoom",
+        "one.playtron.KoraCapture",
+        "inc.kora.Flow",
+        "chrome-one.humain.com__-humainos-chat",
+        "",
+    ] {
+        assert_eq!(AppIdentityId::from_app_id(app_id), None, "{app_id}");
+    }
+}
+
+/// Design #352's halo inks a first-party mark in its app tone and any other in the text colour.
+#[test]
+fn a_first_party_mark_wears_its_app_tone() {
+    for dark in [true, false] {
+        let theme = toned_theme(dark);
+        for (app_id, _, new) in FIRST_PARTY {
+            let app = AppIdentityId::from_app_id(app_id);
+            let (tint, ..) = integrated_mark(&theme, app_id, Some(new));
+            assert_eq!(tint, theme.app_tone(app), "{app_id}");
+        }
+        let (chord, ..) = integrated_mark(&theme, "inc.kora.Chord", Some("Chat"));
+        assert_eq!(chord, Color::from_rgb8(0x75, 0xb5, 0xfa));
+        let (other, ..) = integrated_mark(&theme, "org.mozilla.firefox", Some("Firefox"));
+        assert_eq!(
+            other,
+            theme.text_primary(),
+            "a third-party mark is unchanged"
+        );
+    }
+}
+
+/// A theme file from before the app hues (and HumainOS's) keeps every mark plain.
+#[test]
+fn a_theme_without_app_hues_keeps_marks_plain() {
+    for dark in [true, false] {
+        let theme = integrated_theme(dark);
+        assert_eq!(theme.app_icon_tint_percentage(), None);
+        let (tint, ..) = integrated_mark(&theme, "inc.kora.Chord", Some("Chat"));
+        assert_eq!(tint, theme.text_primary());
+    }
+}
+
+/// The desktop entry names the window; a first-party window without one takes the kit's name.
+#[test]
+fn the_entry_names_the_app_and_the_kit_stands_in_without_one() {
+    let theme = toned_theme(true);
+    let (_, mut renderer, _cache) = integrated_mark(&theme, "inc.kora.Hive", Some("Workspaces"));
+    let (name, selection) = identity(&mut renderer, &theme);
+    assert_eq!(name.unwrap().drawn(), "Workspaces");
+    assert_eq!(selection.unwrap().drawn(), "Home");
+
+    let (_, mut renderer, _cache) = integrated_mark(&theme, "inc.kora.Hive", None);
+    let (name, selection) = identity(&mut renderer, &theme);
+    assert_eq!(name.unwrap().drawn(), "Workspaces");
+    assert_eq!(selection.unwrap().drawn(), "Home");
+
+    let (_, mut renderer, _cache) = integrated_mark(&theme, "org.mozilla.firefox", None);
+    let (name, selection) = identity(&mut renderer, &theme);
+    assert_eq!(
+        name.unwrap().drawn(),
+        "Home",
+        "a third-party window keeps its title"
+    );
+    assert!(selection.is_none());
+}
+
+/// HumainOS draws the Bar header: an identity changes nothing there.
+#[test]
+fn a_bar_header_ignores_the_app_identity() {
+    let mut tokens = DEFAULT_THEME_PAIR.load(true);
+    tokens.window_header_style = WindowHeaderStyle::Bar;
+    tokens.app_icon_tint_percentage = Some(0.12);
+    let theme = CompTheme::new(Arc::new(tokens), true);
+    let frame = |identity| {
+        let (mut renderer, viewport, _cache) = render(&theme, 800.0, 1.0, |header| {
+            header
+                .title("Network")
+                .app_identity(identity)
+                .app_icon(AppIcon::Svg {
+                    bytes: TEST_ICON,
+                    symbolic: true,
+                })
+                .focused(true)
+                .on_close(())
+        });
+        let mut pixels =
+            tiny_skia::Pixmap::new(viewport.physical_width(), viewport.physical_height()).unwrap();
+        draw(
+            &mut renderer,
+            &viewport,
+            &mut pixels,
+            &[Rectangle::with_size(viewport.logical_size())],
+        );
+        pixels.data().to_vec()
+    };
+    assert!(frame(None) == frame(Some(AppIdentityId::Settings)));
+}
+
+/// PR images: each first-party header before (old name, plain mark) and after, in the theme
+/// files `HEADER_THEMES` lists (`name=path,…`), saved to `INTEGRATED_SNAPSHOT_DIR`.
+#[test]
+fn first_party_headers_in_shipped_themes() {
+    let (Some(dir), Some(themes)) = (
+        std::env::var_os("INTEGRATED_SNAPSHOT_DIR"),
+        std::env::var("HEADER_THEMES").ok(),
+    ) else {
+        return;
+    };
+    for entry in themes.split(',') {
+        let (label, path) = entry.split_once('=').expect("name=path");
+        let tokens =
+            icetron_p::icetron_themes::dynamic::DynamicTheme::load(path).expect("a theme file");
+        let dark = !label.contains("light");
+        let theme = CompTheme::new(Arc::new(tokens), dark);
+        for (app_id, old, new) in FIRST_PARTY {
+            for (when, name, identity) in [
+                ("before", old, None),
+                ("after", new, AppIdentityId::from_app_id(app_id)),
+            ] {
+                let (mut renderer, viewport, _cache) = render(&theme, 620.0, 1.5, |header| {
+                    header
+                        .title(name)
+                        .app_name(name)
+                        .app_identity(identity)
+                        .app_icon(AppIcon::Svg {
+                            bytes: icons::APP_WINDOW.bytes,
+                            symbolic: true,
+                        })
+                        .focused(true)
+                        .on_close(())
+                        .on_minimize(())
+                        .on_maximize(())
+                });
+                save(
+                    &mut renderer,
+                    &viewport,
+                    &dir,
+                    &format!("{label}-{app_id}-{when}.png"),
+                );
+            }
+        }
+    }
+}

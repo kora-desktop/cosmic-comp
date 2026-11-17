@@ -8,7 +8,7 @@ use iced_core::Alignment;
 use iced_core::{Element, Length};
 use iced_widget::{Svg, button, container, row, svg, tooltip};
 use icetron_p::icetron_themes::icons;
-use icetron_p::icetron_themes::{TextRole, WindowHeaderStyle};
+use icetron_p::icetron_themes::{AppIdentityId, TextRole, WindowHeaderStyle};
 use icetron_p::prelude::{
     Source, animated_opacity, animated_tooltip, app_header, hairline, halo_close_hover,
     header_control_metrics, header_height_for, header_render_height_for, measure_text_width,
@@ -337,6 +337,7 @@ fn ringed<'b, Message: Clone + 'b>(
 pub struct HeaderBar<'a, Message> {
     title: String,
     app_name: Option<String>,
+    app_identity: Option<AppIdentityId>,
     on_drag: Option<Message>,
     on_close: Option<Message>,
     on_minimize: Option<Message>,
@@ -377,6 +378,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         Self {
             title: String::new(),
             app_name: None,
+            app_identity: None,
             on_drag: None,
             on_close: None,
             on_minimize: None,
@@ -412,6 +414,12 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     pub fn app_name(mut self, app_name: impl Into<String>) -> Self {
         self.app_name = Some(app_name.into());
+        self
+    }
+
+    /// The first-party app this window belongs to, if any: its mark takes the app's tone.
+    pub fn app_identity(mut self, identity: Option<AppIdentityId>) -> Self {
+        self.app_identity = identity;
         self
     }
 
@@ -601,7 +609,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     }
 
     fn identity(&self) -> (&str, Option<&str>) {
-        match self.app_name.as_deref().filter(|name| !name.is_empty()) {
+        // A first-party window without a desktop entry still says which app it is.
+        let name = self
+            .app_name
+            .as_deref()
+            .filter(|name| !name.is_empty())
+            .or_else(|| self.app_identity.map(AppIdentityId::label));
+        match name {
             Some(name) => (
                 name,
                 Some(self.title.as_str()).filter(|title| !title.is_empty() && *title != name),
@@ -734,7 +748,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let mark = app_mark(
             &app_icon,
             theme.spacing_5(),
-            theme.text_primary(),
+            integrated_mark_tone(self.app_identity, theme),
             Some(theme.icon_stroke()),
         );
         // At the narrowest tier a live run takes the glyph as its status action.
@@ -1251,6 +1265,15 @@ const HALO_IDENTITY_MAX: f32 = 192.0;
 /// carries these, so they are literal.
 const RECORD_DOT_PX: f32 = 5.0;
 const RECORD_DOT_INSET_PX: f32 = 1.0;
+
+/// Design #352: a first-party app's mark wears its tone, any other window's the text colour.
+/// A theme without the app hues tints no launch tile either, so its marks stay plain.
+fn integrated_mark_tone(identity: Option<AppIdentityId>, theme: &CompTheme) -> iced_core::Color {
+    match identity {
+        Some(app) if theme.app_icon_tint_percentage().is_some() => theme.app_tone(Some(app)),
+        _ => theme.text_primary(),
+    }
+}
 
 fn app_mark<'a, Message: 'a>(
     icon: &AppIcon,
