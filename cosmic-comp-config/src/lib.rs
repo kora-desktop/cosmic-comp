@@ -346,14 +346,14 @@ pub enum XwaylandDescaling {
 
 #[cfg(test)]
 mod tests {
+    use super::MaximizedPadding;
+
     #[test]
     fn tiling_is_offered_by_default_and_windows_float_until_asked() {
         let config = super::CosmicCompConfig::default();
         assert!(config.tiling_enabled);
         assert!(!config.autotile);
     }
-
-    use super::MaximizedPadding;
 
     #[test]
     fn maximized_padding_defaults_to_the_theme_inset() {
