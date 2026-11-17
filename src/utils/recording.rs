@@ -239,6 +239,16 @@ enum Caller {
     Game,
 }
 
+/// kora-capture-engine's audio id for what the default output plays.
+const OUTPUT_SOUND: &str = "output";
+
+impl Caller {
+    /// A game is recorded with what it plays; the halo's window recordings stay silent.
+    fn audio(self) -> Option<String> {
+        (self == Caller::Game).then(|| OUTPUT_SOUND.to_owned())
+    }
+}
+
 fn start(state: &mut State, surface: &CosmicSurface) {
     begin(state, surface, Caller::Halo, |state, result| {
         if let Err(error) = result {
@@ -380,6 +390,7 @@ fn begin(
     state.common.dbus_state.start_recording(
         identifier,
         path_string,
+        caller.audio(),
         move |state, reply| match reply {
             Ok(id) => {
                 // Only a request still waiting takes the answer; a window
@@ -656,6 +667,12 @@ fn notification(summary: String, body: String) -> Notification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_game_is_recorded_with_its_sound_and_a_window_without() {
+        assert_eq!(Caller::Game.audio().as_deref(), Some("output"));
+        assert_eq!(Caller::Halo.audio(), None);
+    }
 
     fn scratch(test: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("cosmic-comp-{test}-{}", std::process::id()));
