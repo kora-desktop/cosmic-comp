@@ -30,6 +30,9 @@ pub const MOVE_TO_DESKTOP: &str = "movews";
 /// Prefix for a command the app published itself, for the same reason.
 pub const APP_PREFIX: &str = "app:";
 
+/// Prefix for one of the window's recent files, handed back to it on a pick.
+pub const RECENT_PREFIX: &str = "recent:";
+
 /// Pinned out of the box. The capture pair is the one worth a click: both are
 /// about what is on screen *now*, on *this* window, without disturbing it.
 const DEFAULT_PINS: [&str; 2] = ["shot", "record"];
@@ -185,6 +188,15 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
                 .enabled(enabled),
         );
     }
+    // Only an app with a Settings window of its own.
+    if let Some(enabled) = facts.handles("settings") {
+        commands.push(
+            HaloCommand::new("settings", fl!("halo-settings"), HaloCommandGroup::App)
+                .icon(icons::SETTINGS)
+                .shortcut("Ctrl+,")
+                .enabled(enabled),
+        );
+    }
 
     commands.push(
         HaloCommand::new(
@@ -254,6 +266,19 @@ pub fn commands(facts: &WindowFacts<'_>) -> Vec<HaloCommand> {
                 row = row.pinnable(false);
             }
             commands.push(row);
+        }
+        // A file is no verb to keep on the header, so these never pin.
+        for recent in catalog.recent_items() {
+            commands.push(
+                HaloCommand::new(
+                    format!("{RECENT_PREFIX}{}", recent.id),
+                    recent.label.clone(),
+                    HaloCommandGroup::Own,
+                )
+                .icon(icons::FILE_TEXT)
+                .section(fl!("halo-recent-files"))
+                .pinnable(false),
+            );
         }
     } else if let Some(app) = facts.app {
         for action in &app.actions {
@@ -743,8 +768,8 @@ mod tests {
         assert!(row("slate.c0").pinnable);
     }
 
-    /// The App group has no Settings, App info or Close all, and New window only
-    /// for an app that opens windows.
+    /// The App group has no App info or Close all, and Settings and New window
+    /// only for an app that has them.
     #[test]
     fn the_app_group_offers_only_what_the_app_does() {
         let silent = commands(&facts(None));
@@ -754,7 +779,55 @@ mod tests {
         let catalog = catalog();
         let mut facts = facts(None);
         facts.catalog = Some(&catalog);
-        assert!(commands(&facts).iter().any(|c| c.id == "neww"));
+        let listed = commands(&facts);
+        assert!(listed.iter().any(|c| c.id == "neww"));
+        assert!(listed.iter().all(|c| c.id != "settings"));
+
+        let mut catalog = catalog.clone();
+        catalog.handle("settings".into(), 1).unwrap();
+        let mut facts = self::facts(None);
+        facts.catalog = Some(&catalog);
+        let listed = commands(&facts);
+        let settings = listed.iter().find(|c| c.id == "settings").unwrap();
+        assert_eq!(settings.group, HaloCommandGroup::App);
+        assert_eq!(settings.shortcut.as_deref(), Some("Ctrl+,"));
+        assert_eq!(app_command(&catalog, "settings"), Some("settings"));
+    }
+
+    /// The window's recent files follow its own commands, newest first, and never pin.
+    #[test]
+    fn recent_files_follow_the_apps_commands() {
+        use crate::wayland::protocols::app_commands::catalog::Recent;
+        let mut catalog = catalog();
+        for (id, label, timestamp) in [("doc-a", "notes.md", 10), ("doc-b", "plan.md", 20)] {
+            catalog
+                .add_recent(Recent {
+                    id: id.into(),
+                    label: label.into(),
+                    sublabel: String::new(),
+                    timestamp,
+                })
+                .unwrap();
+        }
+        let mut facts = facts(None);
+        facts.catalog = Some(&catalog);
+        let listed = commands(&facts);
+        let recents: Vec<_> = listed
+            .iter()
+            .skip_while(|c| !c.id.starts_with(RECENT_PREFIX))
+            .collect();
+        let shown: Vec<_> = recents.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(shown, ["plan.md", "notes.md"]);
+        assert_eq!(recents[0].id, format!("{RECENT_PREFIX}doc-b"));
+        assert!(recents.iter().all(|c| c.group == HaloCommandGroup::Own
+            && c.section.as_deref() == Some(fl!("halo-recent-files").as_str())
+            && !c.pinnable
+            && message_for(&c.id).is_none()));
+        assert!(
+            commands(&self::facts(None))
+                .iter()
+                .all(|c| !c.id.starts_with(RECENT_PREFIX))
+        );
     }
 
     #[test]

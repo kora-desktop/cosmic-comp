@@ -186,6 +186,22 @@ fn invoke_own(surface: &CosmicSurface, id: &str, generation: Option<u32>) -> boo
     true
 }
 
+/// Hand the window back recent file `id`, picked from catalog `generation`.
+fn open_recent(surface: &CosmicSurface, id: &str, generation: Option<u32>) -> bool {
+    let Some(wl) = surface.wl_surface() else {
+        return false;
+    };
+    let Some(catalog) = app_commands::committed(&wl) else {
+        return false;
+    };
+    app_commands::invoke(
+        &wl,
+        &Selection::Recent(id.to_owned()),
+        generation.unwrap_or(catalog.generation),
+        smithay::utils::SERIAL_COUNTER.next_serial(),
+    )
+}
+
 /// Run a command by id: a window verb, the window's own, or one of the actions
 /// its desktop entry declares.
 pub(super) fn perform_command(
@@ -244,6 +260,10 @@ fn run_command(
         if let Some(seat) = seat {
             open_move_dialog(state, surface, seat, app.cloned());
         }
+        return;
+    }
+    if let Some(recent) = id.strip_prefix(commands::RECENT_PREFIX) {
+        open_recent(surface, recent, generation);
         return;
     }
     if let Some(message) = commands::message_for(id) {
