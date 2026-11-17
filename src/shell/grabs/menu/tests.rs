@@ -571,3 +571,111 @@ fn the_palette_surface_refits_as_the_query_changes_its_rows() {
     element.refit();
     assert_eq!(element.iced.current_size(), full);
 }
+
+/// The palette of an app that has a Settings window and recent files, drawn in
+/// both modes; `HALO_SNAPSHOT_DIR` keeps the images.
+#[test]
+fn the_palette_draws_an_apps_settings_and_recent_files() {
+    use crate::shell::element::window::commands::{WindowFacts, commands};
+    use crate::wayland::protocols::app_commands::catalog::{Catalog, Command, Recent};
+
+    let mut catalog = Catalog::default();
+    for verb in ["copy", "neww", "find", "settings"] {
+        catalog.handle(verb.into(), 1).unwrap();
+    }
+    catalog
+        .add(Command {
+            id: "term.split".into(),
+            name: "Split pane".into(),
+            keys: String::new(),
+            section: String::new(),
+            icon: "panel-left".into(),
+            flags: 0,
+            enabled: true,
+            active: false,
+        })
+        .unwrap();
+    for (id, label, timestamp) in [("f1", "notes.md", 1), ("f2", "plan.md", 2)] {
+        let (id, label, sublabel) = (id.into(), label.into(), String::new());
+        catalog
+            .add_recent(Recent {
+                id,
+                label,
+                sublabel,
+                timestamp,
+            })
+            .unwrap();
+    }
+    let list = commands(&WindowFacts {
+        recording: false,
+        maximized: false,
+        fullscreen: false,
+        resizable: true,
+        on_desktop: true,
+        app: None,
+        catalog: Some(&catalog),
+    });
+    for label in ["Settings", "plan.md", "notes.md"] {
+        assert!(list.iter().any(|c| c.label == label), "{label} is missing");
+    }
+
+    let event_loop = calloop::EventLoop::<State>::try_new().unwrap();
+    for dark in [true, false] {
+        let mut theme = CompTheme::new(Arc::new(DEFAULT_THEME_PAIR.load(dark)), dark);
+        theme.motion.layer_open = std::time::Duration::ZERO;
+        let items = list.iter().map(|c| Item::new(c.label.clone(), |_| {}));
+        let mut menu = ContextMenu::new(items.collect());
+        menu.halo = true;
+        menu.palette = Some(Palette::new("palette-snapshot", "Terminal", list.clone()));
+        let iced = IcedElement::new(menu, Size::default(), event_loop.handle(), theme.clone());
+        let size = iced.minimum_size();
+        iced.resize(size);
+        let mut pixels = tiny_skia::Pixmap::new(size.w as u32, size.h as u32).unwrap();
+        iced.with_program(|menu| {
+            let mut renderer = iced_tiny_skia::Renderer::new(Font::DEFAULT, Pixels(16.0));
+            let mut ui = UserInterface::build(
+                menu.view(&theme),
+                IcedSize::new(size.w as f32, size.h as f32),
+                user_interface::Cache::default(),
+                &mut renderer,
+            );
+            let cursor = iced_core::mouse::Cursor::Unavailable;
+            let redraw = iced_core::window::Event::RedrawRequested(iced_core::time::Instant::now());
+            ui.update(
+                &[iced_core::Event::Window(redraw)],
+                cursor,
+                &mut renderer,
+                &mut Vec::new(),
+            );
+            ui.draw(
+                &mut renderer,
+                &theme.to_iced_theme(),
+                &Style::default(),
+                cursor,
+            );
+            let viewport =
+                Viewport::with_physical_size(IcedSize::new(size.w as u32, size.h as u32), 1.0);
+            let mut mask = tiny_skia::Mask::new(size.w as u32, size.h as u32).unwrap();
+            renderer.draw(
+                &mut pixels.as_mut(),
+                &mut mask,
+                &viewport,
+                &[IcedRectangle::with_size(viewport.logical_size())],
+                if dark { Color::BLACK } else { Color::WHITE },
+            );
+        });
+        if let Some(dir) = std::env::var_os("HALO_SNAPSHOT_DIR") {
+            for pixel in pixels.data_mut().chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+            let name = if dark {
+                "palette-dark.png"
+            } else {
+                "palette-light.png"
+            };
+            pixels
+                .save_png(std::path::PathBuf::from(dir).join(name))
+                .unwrap();
+        }
+    }
+}
