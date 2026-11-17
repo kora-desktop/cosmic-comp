@@ -1,3 +1,10 @@
+## [2.4.2](https://github.com/kora-desktop/cosmic-comp/compare/v2.4.1...v2.4.2) (2026-11-17)
+
+
+### Bug Fixes
+
+* **game-mode:** record a game with its sound ([4ff47e6](https://github.com/kora-desktop/cosmic-comp/commit/4ff47e6d67dee3b4f8c39783e296b13d08bc7fd7))
+
 ## [2.4.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.4.0...v2.4.1) (2026-11-17)
 
 
