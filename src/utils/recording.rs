@@ -31,15 +31,55 @@ use crate::{
 const NOTIFICATION_ICON: &str = "media-record";
 const NOTIFICATION_TIMEOUT_MS: i32 = 5000;
 
+/// What a press on the halo's Record does.
+#[derive(Debug, PartialEq, Eq)]
+enum Press {
+    Nothing,
+    Start,
+    Stop,
+}
+
+/// A press while a start or stop is on the bus would only be refused, and one
+/// just after the halo's own stop is the second click of a double-click: the
+/// engine can answer a stop in a few milliseconds, well inside that window.
+fn press(
+    recording: &Recording,
+    stop_on_bus: bool,
+    stop_pressed: Option<Instant>,
+    now: Instant,
+) -> Press {
+    match recording {
+        Recording::Starting => Press::Nothing,
+        Recording::Idle
+            if stop_pressed.is_some_and(|at| {
+                now.saturating_duration_since(at) < crate::input::DOUBLE_CLICK
+            }) =>
+        {
+            Press::Nothing
+        }
+        Recording::Idle => Press::Start,
+        Recording::Watched { .. } | Recording::Active { .. } if stop_on_bus => Press::Nothing,
+        Recording::Watched { .. } | Recording::Active { .. } => Press::Stop,
+    }
+}
+
 /// Start recording `surface`, or stop the recording it has.
 pub fn toggle(state: &mut State, surface: &CosmicSurface) {
-    match surface.recording() {
-        // A request is on the bus; the answer decides.
-        Recording::Starting => {}
-        Recording::Idle => start(state, surface),
-        // A second press while its stop is on the bus would only be refused.
-        Recording::Watched { id } | Recording::Active { id, .. }
-            if state.common.recording_stops.contains(&id) => {}
+    let recording = surface.recording();
+    let stop_on_bus = match &recording {
+        Recording::Watched { id } | Recording::Active { id, .. } => {
+            state.common.recording_stops.contains(id)
+        }
+        Recording::Idle | Recording::Starting => false,
+    };
+    let now = Instant::now();
+    match press(&recording, stop_on_bus, surface.halo_stop_pressed(), now) {
+        Press::Nothing => return,
+        Press::Start => return start(state, surface),
+        Press::Stop => surface.set_halo_stop_pressed(now),
+    }
+    match recording {
+        Recording::Idle | Recording::Starting => {}
         // The app that started it hears RecordingStopped and files the result.
         Recording::Watched { id } => {
             let surface = surface.clone();
@@ -707,6 +747,66 @@ mod tests {
         assert_eq!(waiters, ["halo", "halo again", "game mode"]);
         assert!(stops.finish("rec-1").0.is_empty(), "answered once");
         assert!(stops.join("rec-1", "halo"), "a later press sends again");
+    }
+
+    fn active(id: &str) -> Recording {
+        Recording::Active {
+            id: id.to_owned(),
+            path: PathBuf::from("/r.mp4"),
+            since: Instant::now(),
+        }
+    }
+
+    // The device round: the engine answered the halo's stop in 35 ms and the
+    // second click of the double press came 211 ms after the first.
+    #[test]
+    fn a_double_press_on_stop_does_not_start_again() {
+        let pressed = Instant::now();
+        let ms = |n| pressed + Duration::from_millis(n);
+        assert_eq!(press(&active("rec-1"), false, None, pressed), Press::Stop);
+        assert_eq!(
+            press(&active("rec-1"), true, Some(pressed), ms(20)),
+            Press::Nothing,
+            "while the stop is on the bus"
+        );
+        assert_eq!(
+            press(&Recording::Idle, false, Some(pressed), ms(211)),
+            Press::Nothing,
+            "the engine already answered"
+        );
+        assert_eq!(
+            press(&Recording::Idle, false, Some(pressed), ms(400)),
+            Press::Start,
+            "a later press records again"
+        );
+    }
+
+    // The toolbar, the panel and an engine that died end it without the halo's
+    // stop: RecordingStopped or the engine leaving the bus set it idle, and the
+    // next press starts at once.
+    #[test]
+    fn a_press_after_a_stop_from_elsewhere_starts_at_once() {
+        let now = Instant::now();
+        assert_eq!(press(&Recording::Idle, false, None, now), Press::Start);
+        let long_ago = now - Duration::from_secs(60);
+        assert_eq!(
+            press(&Recording::Idle, false, Some(long_ago), now),
+            Press::Start
+        );
+    }
+
+    #[test]
+    fn another_app_s_recording_stops_once_and_a_start_waits_for_its_answer() {
+        let now = Instant::now();
+        let watched = Recording::Watched {
+            id: "kora-capture-7".to_owned(),
+        };
+        assert_eq!(press(&watched, false, None, now), Press::Stop);
+        assert_eq!(press(&watched, true, Some(now), now), Press::Nothing);
+        assert_eq!(
+            press(&Recording::Starting, false, None, now),
+            Press::Nothing
+        );
     }
 
     #[test]
