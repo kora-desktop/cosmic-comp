@@ -1277,6 +1277,64 @@ fn fold_desktop(
     Some(into)
 }
 
+/// Remove `handle` from the set holding it, or `None` when no set does. A
+/// desktop with windows hands them to the one before it (after it, for the
+/// first) and an output showing it follows them there; an empty one's output
+/// lands as [`desktop_landing`] says.
+fn remove_desktop_in(
+    sets: &mut IndexMap<Output, WorkspaceSet>,
+    dynamic: bool,
+    handle: &WorkspaceHandle,
+    workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
+    seats: &[Seat<State>],
+) -> Option<bool> {
+    let set = sets
+        .values_mut()
+        .find(|set| set.workspaces.iter().any(|w| w.handle == *handle))?;
+    let idx = set.workspaces.iter().position(|w| w.handle == *handle)?;
+    if set.workspaces.len() == 1 {
+        return Some(false);
+    }
+    let shown = set.active == idx;
+    let Some(workspace) = set.remove_workspace(workspace_state, handle) else {
+        return Some(false);
+    };
+    let landing = if workspace.is_empty() {
+        // The set's removal only moves a desktop between sets; the
+        // protocol object is retired here, or clients keep listing it.
+        workspace_state.remove_workspace(workspace.handle);
+        let last_is_spare = dynamic
+            && set
+                .workspaces
+                .last()
+                .is_some_and(|w| w.is_empty() && !w.pinned);
+        desktop_landing(set.workspaces.len(), idx, last_is_spare)
+    } else {
+        let into = idx.saturating_sub(1);
+        merge_workspaces(workspace, &mut set.workspaces[into], workspace_state, seats);
+        set.workspaces[into].refresh();
+        into
+    };
+    if shown {
+        set.land_on(landing, workspace_state);
+    }
+    Some(true)
+}
+
+/// Where an output lands when the desktop it showed, at `removed`, is gone
+/// and `len` are left: the next desktop, else the one before, and the empty
+/// spare that ends a dynamic set only when there is no other.
+fn desktop_landing(len: usize, removed: usize, last_is_spare: bool) -> usize {
+    let spare = last_is_spare.then(|| len - 1);
+    if removed < len && Some(removed) != spare {
+        removed
+    } else if removed > 0 {
+        removed - 1
+    } else {
+        len - 1
+    }
+}
+
 /// What a fullscreen desktop's set looks like, for [`fullscreen_desktop_step`].
 #[derive(Debug, Clone, Copy)]
 struct FullscreenDesktopFacts {
@@ -1492,6 +1550,21 @@ impl WorkspaceSet {
             }
             Ok(false)
         }
+    }
+
+    /// Show the desktop at `idx` at once: the one on screen is gone, so
+    /// there is nothing to slide from.
+    fn land_on(&mut self, idx: usize, state: &mut WorkspaceUpdateGuard<'_, State>) {
+        if idx >= self.workspaces.len() {
+            return;
+        }
+        if idx != self.active {
+            state.remove_workspace_state(&self.workspaces[self.active].handle, WState::Active);
+            state.remove_workspace_state(&self.workspaces[idx].handle, WState::Urgent);
+            state.add_workspace_state(&self.workspaces[idx].handle, WState::Active);
+            self.active = idx;
+        }
+        self.previously_active = None;
     }
 
     fn activate_previous(
@@ -3106,31 +3179,14 @@ impl Shell {
     ) -> bool {
         let seats: Vec<Seat<State>> = self.seats.iter().cloned().collect();
         for realm in self.realms.values_mut() {
-            for set in realm.sets.values_mut() {
-                let Some(idx) = set.workspaces.iter().position(|w| w.handle == *handle) else {
-                    continue;
-                };
-                if set.workspaces.len() == 1 {
-                    return false;
-                }
-                let Some(workspace) = set.remove_workspace(workspace_state, handle) else {
-                    return false;
-                };
-                if workspace.is_empty() {
-                    // The set's removal only moves a desktop between sets; the
-                    // protocol object is retired here, or clients keep listing it.
-                    workspace_state.remove_workspace(workspace.handle);
-                } else {
-                    let into = idx.saturating_sub(1);
-                    merge_workspaces(
-                        workspace,
-                        &mut set.workspaces[into],
-                        workspace_state,
-                        &seats,
-                    );
-                    set.workspaces[into].refresh();
-                }
-                return true;
+            if let Some(removed) = remove_desktop_in(
+                &mut realm.sets,
+                realm.dynamic,
+                handle,
+                workspace_state,
+                &seats,
+            ) {
+                return removed;
             }
         }
         false
@@ -12595,6 +12651,8 @@ mod assign_desktop_tests;
 mod desktop_choice_tests;
 #[cfg(test)]
 mod layer_output_tests;
+#[cfg(test)]
+mod remove_desktop_tests;
 
 #[cfg(test)]
 mod realm_transition_tests {
