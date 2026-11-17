@@ -75,6 +75,7 @@ use crate::{
 use super::{GrabStartData, ResizeEdge};
 
 mod default;
+mod held;
 mod item;
 mod move_dialog;
 #[cfg(test)]
@@ -2014,6 +2015,7 @@ fn search_field_id() -> iced_core::widget::Id {
 pub struct PaletteKeyboardGrab {
     seat: Seat<State>,
     start_data: KeyboardGrabStartData<State>,
+    held: held::HeldByWindow,
     on_escape: Mutex<Option<EscapeHook>>,
 }
 
@@ -2030,10 +2032,12 @@ enum Forwarded {
 
 impl PaletteKeyboardGrab {
     pub fn new(seat: Seat<State>) -> Self {
-        let focus = seat
-            .get_keyboard()
+        let keyboard = seat.get_keyboard();
+        let focus = keyboard
+            .as_ref()
             .and_then(|keyboard| keyboard.current_focus());
         Self {
+            held: held::HeldByWindow::new(keyboard.as_ref()),
             seat,
             start_data: KeyboardGrabStartData { focus },
             on_escape: Mutex::new(None),
@@ -2162,6 +2166,8 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
         serial: Serial,
         time: u32,
     ) {
+        self.held
+            .release(data, handle, keycode, state, modifiers, serial, time);
         let sym = handle.keysym_handle(keycode).modified_sym();
         if sym == Keysym::Escape && state == KeyState::Pressed {
             self.close(data, handle, serial, time);
