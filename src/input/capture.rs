@@ -23,6 +23,19 @@ pub fn arguments(action: &shortcuts::Action) -> Option<&'static str> {
     })
 }
 
+/// Whether the shortcut opens an overlay to point at, so a click right after it is meant for
+/// that overlay and must not reach the app under it.
+pub fn holds_input(action: &shortcuts::Action) -> bool {
+    use shortcuts::Action;
+    matches!(
+        action,
+        Action::CaptureSelection
+            | Action::CaptureSelectionClipboard
+            | Action::CaptureToolbar
+            | Action::PickColor
+    )
+}
+
 /// Whether capture shortcuts still reach the compositor while the focused surface holds
 /// the keys. An X11 keyboard grab (`protocol` false) is how games take keys, not a request
 /// to inhibit; over a game a capture is always the person's, but elsewhere an inhibitor,
@@ -107,6 +120,21 @@ mod tests {
             !passes_inhibitor(true, false),
             "recording a shortcut in Settings"
         );
+    }
+
+    /// A screen capture and Stop open nothing, so holding input would only stall it.
+    #[test]
+    fn only_the_pointing_captures_hold_input() {
+        for (action, _) in CAPTURES {
+            let want = matches!(
+                action,
+                Action::CaptureSelection
+                    | Action::CaptureSelectionClipboard
+                    | Action::CaptureToolbar
+                    | Action::PickColor
+            );
+            assert_eq!(holds_input(&action), want, "{action:?}");
+        }
     }
 
     #[test]

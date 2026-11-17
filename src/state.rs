@@ -310,6 +310,7 @@ pub struct State {
     pub common: Common,
     pub ready: Once,
     pub last_refresh: LastRefresh,
+    pub capture_hold: Option<crate::input::capture_hold::Active>,
     pub kiosk_command: Option<Command>,
 }
 smithay::delegate_dispatch2!(State);
@@ -1114,6 +1115,7 @@ impl State {
             backend: BackendData::Unset,
             ready: Once::new(),
             last_refresh: LastRefresh::None,
+            capture_hold: None,
             kiosk_command,
         }
     }

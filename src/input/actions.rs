@@ -1199,6 +1199,9 @@ impl State {
                 if let Some(command) =
                     super::capture::command(&action, program.as_deref(), system_actions)
                 {
+                    if program.is_some() && super::capture::holds_input(&action) {
+                        self.hold_input_for_capture();
+                    }
                     self.spawn_command(command);
                 }
             }
