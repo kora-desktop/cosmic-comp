@@ -1,3 +1,17 @@
+# [2.5.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.4.2...v2.5.0) (2026-11-17)
+
+
+### Bug Fixes
+
+* **halo:** let the app see the keys that opened the palette come up ([c241910](https://github.com/kora-desktop/cosmic-comp/commit/c2419102c48a3d53a4f820bb51450092bb8d730a))
+* **input:** let typing after a cancelled capture reach the app ([66b5a65](https://github.com/kora-desktop/cosmic-comp/commit/66b5a6514d835eacdf477fadc44f0a3683a77984))
+* **tiling:** offer tiling by default ([90545fa](https://github.com/kora-desktop/cosmic-comp/commit/90545fa29d21bbcc7cdb80215703dc04420379ed))
+
+
+### Features
+
+* **halo:** offer an app's Settings and recent files in the palette ([1294318](https://github.com/kora-desktop/cosmic-comp/commit/129431852db67207930bcfed3251bac59f82c9f4))
+
 ## [2.4.2](https://github.com/kora-desktop/cosmic-comp/compare/v2.4.1...v2.4.2) (2026-11-17)
 
 
