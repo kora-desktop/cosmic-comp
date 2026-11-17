@@ -49,17 +49,19 @@ impl From<zbus::Error> for StopFailure {
 }
 
 impl DBusState {
-    /// Record the toplevel `identifier` into `path`. `done` gets the recording id.
+    /// Record the toplevel `identifier` into `path`, with sound from the engine's audio
+    /// id `audio`. `done` gets the recording id.
     pub fn start_recording(
         &self,
         identifier: String,
         path: String,
+        audio: Option<String>,
         done: impl FnOnce(&mut State, Reply) + 'static,
     ) {
         let state = self.clone();
         let evlh = self.0.evlh.clone();
         self.spawn(async move {
-            let reply = start(&state, &identifier, &path)
+            let reply = start(&state, &identifier, &path, audio)
                 .await
                 .map_err(|err| err.to_string());
             evlh.insert_idle(move |state| done(state, reply));
@@ -87,13 +89,19 @@ impl DBusState {
     }
 }
 
-async fn start(state: &DBusState, identifier: &str, path: &str) -> zbus::Result<String> {
+async fn start(
+    state: &DBusState,
+    identifier: &str,
+    path: &str,
+    audio: Option<String>,
+) -> zbus::Result<String> {
     let conn = state.session_conn().await?;
     let proxy = CaptureEngine1Proxy::new(conn).await?;
     // A recording shows the pointer, as Kora Capture's do by default.
     let options = RecordOptions {
         codec: Some(Codec::Auto),
         cursor: true,
+        audio,
         ..RecordOptions::default()
     };
     proxy
