@@ -62,6 +62,11 @@ impl WlrLayerShellHandler for State {
     }
 
     fn layer_destroyed(&mut self, surface: WlrLayerSurface) {
+        if self.capture_hold.is_some() {
+            self.common
+                .event_loop_handle
+                .insert_idle(|state| state.end_capture_hold_if_ready(false));
+        }
         let surface_id = surface.wl_surface().id();
         let mut shell = self.common.shell.write();
 

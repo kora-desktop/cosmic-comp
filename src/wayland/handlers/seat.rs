@@ -72,6 +72,11 @@ impl SeatHandler for State {
         self.common
             .event_loop_handle
             .insert_idle(crate::display_grants::focus_changed);
+        if self.capture_hold.is_some() {
+            self.common
+                .event_loop_handle
+                .insert_idle(|state| state.end_capture_hold_if_ready(false));
+        }
     }
 
     fn virtual_keyboard_request(

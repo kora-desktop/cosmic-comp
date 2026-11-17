@@ -273,9 +273,17 @@ impl State {
     where
         <B as InputBackend>::Device: 'static,
     {
-        let Some(event) = self.hold_capture_input(event) else {
-            return;
-        };
+        if let Some(event) = self.hold_capture_input(event) {
+            self.handle_input_event(event);
+        }
+    }
+
+    /// Handles `event` now, past any capture hold.
+    #[profiling::function]
+    pub(crate) fn handle_input_event<B: InputBackend + 'static>(&mut self, event: InputEvent<B>)
+    where
+        <B as InputBackend>::Device: 'static,
+    {
         crate::wayland::handlers::output_power::set_all_surfaces_dpms_on(self);
 
         use smithay::backend::input::Event;
