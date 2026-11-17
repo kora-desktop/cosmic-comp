@@ -67,10 +67,7 @@ use smithay::{
             element::{
                 Element, Id, Kind, NamespacedElement, RenderElement, WeakId,
                 texture::{TextureRenderBuffer, TextureRenderElement},
-                utils::{
-                    ConstrainAlign, ConstrainScaleBehavior, CropRenderElement, Relocate,
-                    RelocateRenderElement, RescaleRenderElement, constrain_render_elements,
-                },
+                utils::{CropRenderElement, Relocate, RelocateRenderElement, RescaleRenderElement},
             },
             gles::{
                 GlesError, GlesPixelProgram, GlesRenderer, GlesTexProgram, GlesTexture, Uniform,
@@ -2726,6 +2723,76 @@ impl PostprocessOutputConfig {
     }
 }
 
+/// The output's size in physical pixels, in the orientation elements are placed in.
+pub fn output_pixel_size(output: &Output) -> Size<i32, Physical> {
+    output.current_transform().transform_size(
+        output
+            .current_mode()
+            .map(|mode| mode.size)
+            .unwrap_or_default(),
+    )
+}
+
+/// Where a final pass draws its `source`-sized texture on an `output`-sized screen: fitted
+/// and centred, and exactly the screen when the sizes match.
+pub fn postprocess_target(
+    source: Size<i32, Physical>,
+    output: Size<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    if source.is_empty() || source == output {
+        return Rectangle::from_size(output);
+    }
+    let fit = f64::min(
+        output.w as f64 / source.w as f64,
+        output.h as f64 / source.h as f64,
+    );
+    let size = Size::<i32, Physical>::from((
+        ((source.w as f64 * fit).round() as i32).min(output.w),
+        ((source.h as f64 * fit).round() as i32).min(output.h),
+    ));
+    Rectangle::new(
+        Point::from(((output.w - size.w) / 2, (output.h - size.h) / 2)),
+        size,
+    )
+}
+
+/// Draws `element`, which shows `rect` of a `source`-sized texture, at its place in `target`.
+///
+/// The element is rescaled per axis from its own rounded geometry, so its pixels land on
+/// the target's exactly: a fractional scale must not stretch the pass by a pixel.
+pub fn place_postprocess_element<E: Element>(
+    element: E,
+    rect: Rectangle<i32, Physical>,
+    source: Size<i32, Physical>,
+    target: Rectangle<i32, Physical>,
+    output: Size<i32, Physical>,
+    scale: f64,
+) -> Option<CropRenderElement<RelocateRenderElement<RescaleRenderElement<E>>>> {
+    if source.is_empty() {
+        return None;
+    }
+    let ratio = Scale::from((
+        target.size.w as f64 / source.w as f64,
+        target.size.h as f64 / source.h as f64,
+    ));
+    let dst = Rectangle::new(
+        target.loc + rect.loc.to_f64().upscale(ratio).to_i32_round(),
+        rect.size.to_f64().upscale(ratio).to_i32_round(),
+    );
+    let geometry = element.geometry(scale.into());
+    if geometry.is_empty() || dst.is_empty() {
+        return None;
+    }
+    let rescale = Scale::from((
+        dst.size.w as f64 / geometry.size.w as f64,
+        dst.size.h as f64 / geometry.size.h as f64,
+    ));
+    let element = RescaleRenderElement::from_element(element, geometry.loc, rescale);
+    let element =
+        RelocateRenderElement::from_element(element, dst.loc - geometry.loc, Relocate::Relative);
+    CropRenderElement::from_element(element, scale, Rectangle::from_size(output))
+}
+
 #[derive(Debug, Default)]
 pub struct ScreenFilterStorage {
     pub filter: ScreenFilter,
@@ -2857,8 +2924,6 @@ where
                     .expect("OffscreenShader should be available through `init_shaders`")
                     .0
                     .clone();
-            let texture_geometry =
-                texture_elem.geometry(output.current_scale().fractional_scale().into());
             let elements = {
                 let texture_elem = TextureShaderElement::new(
                     texture_elem,
@@ -2883,23 +2948,17 @@ where
                         Uniform::new("night_shift", f32::from(screen_filter.filter.night_shift)),
                     ],
                 );
-                constrain_render_elements(
-                    std::iter::once(texture_elem),
-                    (0, 0),
-                    Rectangle::from_size(
-                        output
-                            .geometry()
-                            .size
-                            .as_logical()
-                            .to_f64()
-                            .to_physical(output.current_scale().fractional_scale())
-                            .to_i32_round(),
-                    ),
-                    texture_geometry,
-                    ConstrainScaleBehavior::Fit,
-                    ConstrainAlign::CENTER,
-                    1.0,
+                let source = state.output_config.size;
+                let output_size = output_pixel_size(output);
+                place_postprocess_element(
+                    texture_elem,
+                    Rectangle::from_size(source),
+                    source,
+                    postprocess_target(source, output_size),
+                    output_size,
+                    output.current_scale().fractional_scale(),
                 )
+                .into_iter()
                 .map(CosmicElement::Postprocess)
                 .collect::<Vec<_>>()
             };
@@ -3210,6 +3269,185 @@ mod clear_color_tests {
             "", "red", "#12345", "#zzzzzz", "1,2", "1,2,3,4", "-1,0,0", "a,b,c",
         ] {
             assert!(parse_clear_color(raw).is_none(), "{raw:?} should not parse");
+        }
+    }
+}
+
+#[cfg(test)]
+mod postprocess_placement_tests {
+    use super::{place_postprocess_element, postprocess_target};
+    use smithay::{
+        backend::{
+            allocator::Fourcc,
+            renderer::{
+                ContextId, Texture,
+                element::{Element, Id, Kind, texture::TextureRenderElement},
+            },
+        },
+        utils::{Buffer, Physical, Rectangle, Size, Transform},
+    };
+
+    #[derive(Debug, Clone)]
+    struct FakeTexture(Size<i32, Physical>);
+
+    impl Texture for FakeTexture {
+        fn width(&self) -> u32 {
+            self.0.w as u32
+        }
+        fn height(&self) -> u32 {
+            self.0.h as u32
+        }
+        fn format(&self) -> Option<Fourcc> {
+            None
+        }
+    }
+
+    const SCALES: [f64; 5] = [1.0, 1.25, 1.5, 1.75, 2.0];
+    const MODES: [(i32, i32); 6] = [
+        (2560, 1440),
+        (1920, 1080),
+        (2880, 1800),
+        (3840, 2160),
+        (1366, 768),
+        (2256, 1504),
+    ];
+    const TRANSFORMS: [Transform; 8] = [
+        Transform::Normal,
+        Transform::_90,
+        Transform::_180,
+        Transform::_270,
+        Transform::Flipped,
+        Transform::Flipped90,
+        Transform::Flipped180,
+        Transform::Flipped270,
+    ];
+
+    // Built the way the final pass builds its texture element.
+    fn texture(size: Size<i32, Physical>) -> TextureRenderElement<FakeTexture> {
+        TextureRenderElement::from_static_texture(
+            Id::new(),
+            ContextId::new(),
+            (0., 0.),
+            FakeTexture(size),
+            1,
+            Transform::Normal,
+            None,
+            None,
+            None,
+            None,
+            Kind::Unspecified,
+        )
+    }
+
+    fn full_src(size: Size<i32, Physical>) -> Rectangle<f64, Buffer> {
+        Rectangle::from_size(Size::<f64, Buffer>::from((size.w as f64, size.h as f64)))
+    }
+
+    /// At 150% a 2560 px texture was drawn 2561 px wide, so every pixel was resampled.
+    #[test]
+    fn the_pass_covers_the_output_pixel_for_pixel() {
+        for (w, h) in MODES {
+            for transform in TRANSFORMS {
+                let output = transform.transform_size(Size::<i32, Physical>::from((w, h)));
+                for scale in SCALES {
+                    let target = postprocess_target(output, output);
+                    let placed = place_postprocess_element(
+                        texture(output),
+                        Rectangle::from_size(output),
+                        output,
+                        target,
+                        output,
+                        scale,
+                    )
+                    .unwrap();
+                    assert_eq!(
+                        placed.geometry(scale.into()),
+                        Rectangle::from_size(output),
+                        "{w}x{h} {transform:?} at {scale}"
+                    );
+                    assert_eq!(
+                        placed.src(),
+                        full_src(output),
+                        "{w}x{h} {transform:?} at {scale}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_cursor_keeps_its_pixels() {
+        let output = Size::<i32, Physical>::from((2560, 1440));
+        let cursor = Rectangle::<i32, Physical>::new((101, 37).into(), (64, 64).into());
+        for scale in SCALES {
+            let element = TextureRenderElement::from_static_texture(
+                Id::new(),
+                ContextId::new(),
+                cursor.loc.to_f64(),
+                FakeTexture(cursor.size),
+                1,
+                Transform::Normal,
+                None,
+                None,
+                Some(cursor.size.to_logical(1)),
+                None,
+                Kind::Cursor,
+            );
+            let placed = place_postprocess_element(
+                element,
+                cursor,
+                output,
+                postprocess_target(output, output),
+                output,
+                scale,
+            )
+            .unwrap();
+            assert_eq!(placed.geometry(scale.into()), cursor, "at {scale}");
+            assert_eq!(placed.src(), full_src(cursor.size), "at {scale}");
+        }
+    }
+
+    /// A mirror is fitted and centred on the other output's pixels.
+    #[test]
+    fn a_mirror_is_fitted_and_centred() {
+        let cases = [
+            (
+                (2560, 1440),
+                (1920, 1080),
+                Rectangle::new((0, 0).into(), (1920, 1080).into()),
+            ),
+            (
+                (1920, 1080),
+                (1920, 1200),
+                Rectangle::new((0, 60).into(), (1920, 1080).into()),
+            ),
+            (
+                (1440, 2560),
+                (1920, 1080),
+                Rectangle::new((656, 0).into(), (608, 1080).into()),
+            ),
+        ];
+        for ((sw, sh), (ow, oh), expected) in cases {
+            let source = Size::<i32, Physical>::from((sw, sh));
+            let output = Size::<i32, Physical>::from((ow, oh));
+            let target = postprocess_target(source, output);
+            assert_eq!(target, expected);
+            for scale in SCALES {
+                let placed = place_postprocess_element(
+                    texture(source),
+                    Rectangle::from_size(source),
+                    source,
+                    target,
+                    output,
+                    scale,
+                )
+                .unwrap();
+                assert_eq!(
+                    placed.geometry(scale.into()),
+                    expected,
+                    "{sw}x{sh} at {scale}"
+                );
+            }
         }
     }
 }

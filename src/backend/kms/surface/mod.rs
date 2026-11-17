@@ -5,7 +5,8 @@ use crate::{
         CLEAR_COLOR, CursorMode, GlMultiError, GlMultiRenderer, PostprocessOutputConfig,
         PostprocessShader, PostprocessState, capture_exclusion,
         element::{AsGlowRenderer, CosmicElement, DamageElement},
-        init_shaders, output_elements, release_thread_user_data, thread_user_data,
+        init_shaders, output_elements, output_pixel_size, place_postprocess_element,
+        postprocess_target, release_thread_user_data, thread_user_data,
     },
     config::ScreenFilter,
     shell::Shell,
@@ -50,10 +51,7 @@ use smithay::{
             element::{
                 Element, Kind, RenderElementStates,
                 texture::TextureRenderElement,
-                utils::{
-                    ConstrainAlign, ConstrainScaleBehavior, Relocate, RelocateRenderElement,
-                    constrain_render_elements,
-                },
+                utils::{Relocate, RelocateRenderElement},
             },
             gles::{
                 GlesError, GlesRenderbuffer, GlesRenderer, GlesTexture, Uniform,
@@ -2986,66 +2984,7 @@ fn postprocess_elements<'a>(
             .expect("OffscreenShader should be available through `init_shaders`")
             .0
             .clone();
-
-    let mut elements: [Option<TextureShaderElement>; 2] = [None, None];
-    if let Some(cursor_texture) = postprocess_state.cursor_texture.as_ref() {
-        let cursor_geometry = pre_postprocess_data.cursor_geometry.unwrap();
-        let texture_elem = TextureRenderElement::from_texture_render_buffer(
-            cursor_geometry.loc.to_f64(),
-            cursor_texture,
-            None,
-            Some(Rectangle::new(
-                Point::from((0., 0.)),
-                cursor_geometry.size.to_logical(1).to_f64(),
-            )),
-            Some(
-                cursor_geometry
-                    .size
-                    .to_f64()
-                    .to_logical(output.current_scale().fractional_scale())
-                    .to_i32_round(),
-            ),
-            Kind::Cursor,
-        );
-
-        elements[0] = Some(TextureShaderElement::new(
-            texture_elem,
-            postprocess_texture_shader.clone(),
-            vec![
-                Uniform::new("invert", if screen_filter.inverted { 1. } else { 0. }),
-                Uniform::new(
-                    "color_mode",
-                    screen_filter
-                        .color_filter
-                        .map(|val| val as u8 as f32)
-                        .unwrap_or(0.),
-                ),
-                Uniform::new("night_shift", f32::from(screen_filter.night_shift)),
-            ],
-        ));
-    }
-
-    let texture_elem = TextureRenderElement::from_texture_render_buffer(
-        (0., 0.),
-        &postprocess_state.texture,
-        None,
-        Some(Rectangle::new(
-            Point::from((0., 0.)),
-            postprocess_state.output_config.size.to_logical(1).to_f64(),
-        )),
-        Some(
-            postprocess_state
-                .output_config
-                .size
-                .to_f64()
-                .to_logical(postprocess_state.output_config.fractional_scale)
-                .to_i32_round(),
-        ),
-        Kind::Unspecified,
-    );
-    elements[1] = Some(TextureShaderElement::new(
-        texture_elem,
-        postprocess_texture_shader.clone(),
+    let uniforms = || {
         vec![
             Uniform::new("invert", if screen_filter.inverted { 1. } else { 0. }),
             Uniform::new(
@@ -3056,41 +2995,61 @@ fn postprocess_elements<'a>(
                     .unwrap_or(0.),
             ),
             Uniform::new("night_shift", f32::from(screen_filter.night_shift)),
-        ],
+        ]
+    };
+
+    // Everything is placed in physical pixels: re-deriving the size from a fractional
+    // logical size drew a 2560 px texture 2561 px wide at 150% and blurred the screen.
+    let source = postprocess_state.output_config.size;
+    let output_size = output_pixel_size(output);
+    let target = postprocess_target(source, output_size);
+    let output_scale = output.current_scale().fractional_scale();
+
+    let mut elements = Vec::with_capacity(2);
+    if let Some(cursor_texture) = postprocess_state.cursor_texture.as_ref() {
+        let cursor_geometry = pre_postprocess_data.cursor_geometry.unwrap();
+        let texture_elem = TextureRenderElement::from_texture_render_buffer(
+            cursor_geometry.loc.to_f64(),
+            cursor_texture,
+            None,
+            Some(Rectangle::new(
+                Point::from((0., 0.)),
+                cursor_geometry.size.to_logical(1).to_f64(),
+            )),
+            Some(cursor_geometry.size.to_logical(1)),
+            Kind::Cursor,
+        );
+        elements.extend(place_postprocess_element(
+            TextureShaderElement::new(texture_elem, postprocess_texture_shader.clone(), uniforms()),
+            cursor_geometry,
+            source,
+            target,
+            output_size,
+            output_scale,
+        ));
+    }
+
+    let texture_elem = TextureRenderElement::from_texture_render_buffer(
+        (0., 0.),
+        &postprocess_state.texture,
+        None,
+        None,
+        None,
+        Kind::Unspecified,
+    );
+    elements.extend(place_postprocess_element(
+        TextureShaderElement::new(texture_elem, postprocess_texture_shader, uniforms()),
+        Rectangle::from_size(source),
+        source,
+        target,
+        output_size,
+        output_scale,
     ));
 
-    // The frame is rendered at `output`'s scale (the compositor tracks the
-    // destination via `OutputModeSource::Auto`), so the elements' physical size is
-    // `source_mode / source_scale * dest_scale` — only equal to the source's mode
-    // size when both outputs share a scale. Referencing the source mode size instead
-    // scales a mirror between differently-scaled outputs by `dest_scale /
-    // source_scale` and, because the reference then appears to fill the constrain
-    // exactly, aligns it to the top-left rather than centering it.
-    let output_scale = output.current_scale().fractional_scale();
-    let reference = elements[1]
-        .as_ref()
-        .map(|elem| elem.geometry(output_scale.into()))
-        .unwrap_or_else(|| {
-            Rectangle::new(Point::from((0, 0)), postprocess_state.output_config.size)
-        });
-
-    constrain_render_elements(
-        elements.into_iter().flatten(),
-        (0, 0),
-        Rectangle::from_size(
-            output
-                .geometry()
-                .size
-                .as_logical()
-                .to_physical_precise_round(output_scale),
-        ),
-        reference,
-        ConstrainScaleBehavior::Fit,
-        ConstrainAlign::CENTER,
-        output_scale,
-    )
-    .map(CosmicElement::<GlMultiRenderer>::Postprocess)
-    .collect::<Vec<_>>()
+    elements
+        .into_iter()
+        .map(CosmicElement::<GlMultiRenderer>::Postprocess)
+        .collect()
 }
 
 #[cfg(test)]
