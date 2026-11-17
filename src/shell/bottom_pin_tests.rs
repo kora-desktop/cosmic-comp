@@ -1,4 +1,4 @@
-use super::{bottom_pin_deficit, layer_bottom_pin};
+use super::{bottom_pin_deficit, layer_bottom_pin, raise_layer};
 use smithay::{
     desktop::{LayerSurface, layer_map_for_output},
     output::{Mode, Output, PhysicalProperties, Subpixel},
@@ -161,4 +161,22 @@ fn only_bottom_anchored_surfaces_are_pinned() {
         0
     );
     assert_eq!(bottom_pin_deficit(Anchor::BOTTOM, 0, 400), 0);
+}
+
+/// A toast mapped at login and shown later must not stay under a full-screen
+/// overlay mapped since, such as the colour picker's frozen screen.
+#[test]
+fn a_surface_shown_again_goes_above_ones_mapped_after_it() {
+    let (_d1, _m1, _s1, toast) = commit_popover(100);
+    let (_d2, _m2, _s2, overlay) = commit_popover(720);
+    let output = screen(720);
+    let mut map = layer_map_for_output(&output);
+    map.map_layer(&toast).unwrap();
+    map.map_layer(&overlay).unwrap();
+    assert_eq!(map.layers_on(Layer::Top).next_back(), Some(&overlay));
+
+    assert!(raise_layer(&mut map, &toast));
+    assert_eq!(map.layers_on(Layer::Top).next_back(), Some(&toast));
+    assert!(map.layer_geometry(&toast).is_some(), "still arranged");
+    assert!(!raise_layer(&mut map, &toast), "already on top");
 }
