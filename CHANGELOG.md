@@ -1,3 +1,10 @@
+## [2.4.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.4.0...v2.4.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **input:** hold clicks from a capture shortcut until its overlay maps ([cbf143c](https://github.com/kora-desktop/cosmic-comp/commit/cbf143cdd195eafd8379b19da885c6ff3955bae2))
+
 # [2.4.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.3.1...v2.4.0) (2026-11-17)
 
 
