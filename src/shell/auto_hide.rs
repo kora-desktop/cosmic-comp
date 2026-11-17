@@ -179,6 +179,16 @@ pub fn margin_rect<K>(
     (w > 0 && h > 0).then(|| Rectangle::new((x, y).into(), (w, h).into()))
 }
 
+/// Whether `pointer` rests where it reveals the surface: its edge zone or its margin.
+pub fn pointer_in_reveal<K>(
+    pointer: Point<f64, K>,
+    zone: Option<&EdgeZone<K>>,
+    margin: Option<Rectangle<i32, K>>,
+) -> bool {
+    zone.is_some_and(|zone| zone.contains(pointer))
+        || margin.is_some_and(|margin| margin.to_f64().contains(pointer))
+}
+
 // ---------------------------------------------------------------------------
 // Mode enum – controls when auto-hide triggers
 // ---------------------------------------------------------------------------
@@ -446,6 +456,20 @@ impl AutoHideVisibility {
             self.start_hide(true);
         }
         hide
+    }
+
+    /// A new registration: a mapped surface slides out unless the pointer already
+    /// holds it; an unmapped one snaps hidden. Returns whether it snapped.
+    pub fn arm(&mut self, should_hide: bool, mapped: bool, held: bool) -> bool {
+        if !should_hide || (mapped && held) {
+            return false;
+        }
+        if mapped {
+            self.start_hide(false);
+            return false;
+        }
+        *self = Self::Hidden;
+        true
     }
 
     /// Force immediate show (no delay). Used when un-maximize occurs.
@@ -914,6 +938,42 @@ mod tests {
             matches!(visibility, AutoHideVisibility::SlidingIn { .. }),
             "a mode that stops hiding shows it"
         );
+    }
+
+    #[test]
+    fn a_pointer_resting_in_the_reveal_at_registration_holds_the_surface() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1280, 800).into());
+        let bar = Rectangle::<i32, Logical>::new((400, 734).into(), (480, 56).into());
+        let margin = margin_rect(AutoHideEdge::Bottom, output, bar);
+        let zone = EdgeZone {
+            edge: AutoHideEdge::Bottom.reveal_edge(),
+            rect: edge_zone_rect(AutoHideEdge::Bottom, output.to_f64(), bar.to_f64(), 2.0),
+            ceded: None,
+        };
+        let rests = |x: f64, y: f64| pointer_in_reveal((x, y).into(), Some(&zone), margin);
+        assert!(rests(500.0, 799.0), "on the edge row");
+        assert!(rests(500.0, 792.0), "in the margin");
+        assert!(
+            !rests(500.0, 760.0),
+            "on the bar is the surface's own hover"
+        );
+        assert!(!rests(100.0, 799.0), "beside the bar");
+
+        let mut held = AutoHideVisibility::Visible;
+        assert!(!held.arm(true, true, true));
+        assert!(
+            matches!(held, AutoHideVisibility::Visible),
+            "the pointer holds it"
+        );
+        let mut free = AutoHideVisibility::Visible;
+        assert!(!free.arm(true, true, false));
+        assert!(matches!(free, AutoHideVisibility::SlidingOut { .. }));
+        let mut unmapped = AutoHideVisibility::Visible;
+        assert!(unmapped.arm(true, false, false), "startup snaps hidden");
+        assert!(matches!(unmapped, AutoHideVisibility::Hidden));
+        let mut shown = AutoHideVisibility::Visible;
+        assert!(!shown.arm(false, true, false));
+        assert!(matches!(shown, AutoHideVisibility::Visible));
     }
 
     #[test]
