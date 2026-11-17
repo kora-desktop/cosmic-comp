@@ -1024,7 +1024,10 @@ fn config_changed(config: cosmic_config::Config, keys: Vec<String>, state: &mut 
                 state.common.update_config();
             }
             "tiling_enabled" => {
-                let new = get_config::<bool>(&config, "tiling_enabled");
+                // A key reset to nothing goes back to the default, not to off.
+                let new = config
+                    .get::<bool>("tiling_enabled")
+                    .unwrap_or(CosmicCompConfig::default().tiling_enabled);
                 if new != state.common.config.cosmic_conf.tiling_enabled {
                     state.common.config.cosmic_conf.tiling_enabled = new;
 

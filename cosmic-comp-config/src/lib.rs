@@ -192,7 +192,7 @@ impl Default for CosmicCompConfig {
             input_devices: Default::default(),
             xkb_config: Default::default(),
             keyboard_config: Default::default(),
-            tiling_enabled: false,
+            tiling_enabled: true,
             autotile: Default::default(),
             autotile_behavior: Default::default(),
             active_hint: true,
@@ -346,6 +346,13 @@ pub enum XwaylandDescaling {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tiling_is_offered_by_default_and_windows_float_until_asked() {
+        let config = super::CosmicCompConfig::default();
+        assert!(config.tiling_enabled);
+        assert!(!config.autotile);
+    }
+
     use super::MaximizedPadding;
 
     #[test]
