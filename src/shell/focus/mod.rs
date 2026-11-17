@@ -994,7 +994,7 @@ pub(crate) fn update_focus_target(
     }
 }
 
-fn update_pointer_focus(state: &mut State, seat: &Seat<State>) {
+pub(crate) fn update_pointer_focus(state: &mut State, seat: &Seat<State>) {
     if let Some(pointer) = seat.get_pointer() {
         let mut output = seat.active_output();
         let mut position = pointer.current_location().as_global();

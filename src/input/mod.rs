@@ -94,6 +94,7 @@ use std::{
 
 pub mod actions;
 pub mod capture;
+pub mod capture_hold;
 pub mod dnd_hover;
 mod escape;
 pub mod gestures;
@@ -268,10 +269,13 @@ impl State {
     }
 
     #[profiling::function]
-    pub fn process_input_event<B: InputBackend>(&mut self, event: InputEvent<B>)
+    pub fn process_input_event<B: InputBackend + 'static>(&mut self, event: InputEvent<B>)
     where
         <B as InputBackend>::Device: 'static,
     {
+        let Some(event) = self.hold_capture_input(event) else {
+            return;
+        };
         crate::wayland::handlers::output_power::set_all_surfaces_dpms_on(self);
 
         use smithay::backend::input::Event;

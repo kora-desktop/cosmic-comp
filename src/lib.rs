@@ -711,6 +711,7 @@ fn refresh(state: &mut State) {
 
     state.common.refresh();
     state::Common::refresh_focus(state);
+    state.end_capture_hold_if_ready(false);
     state.refresh_game_mode_state();
     OverlapNotifyState::refresh(state);
     UsableAreaState::refresh(state);

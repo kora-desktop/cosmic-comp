@@ -734,6 +734,10 @@ impl State {
         {
             // compute initial dimensions by mapping
             let target = shell.map_layer(&layer_surface);
+            if self.capture_hold.is_some() {
+                let _ = (self.common.event_loop_handle)
+                    .insert_idle(|state| state.end_capture_hold_if_ready(true));
+            }
 
             // Logout-hold self-heal: a fresh wallpaper mapping means this was a
             // wallpaper CHANGE, not a logout — resume presenting.
