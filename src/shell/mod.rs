@@ -5247,24 +5247,23 @@ impl Shell {
             None => true,
         };
 
-        if should_hide {
-            if mapped {
-                // Re-registration of an already-mapped, visible bar (e.g. the
-                // panel re-arming auto-hide after a popover closes): SLIDE OUT
-                // (animated) instead of snapping. Reuses the same SlidingOut
-                // transition as the normal cursor-leave hide; the terminal
-                // `visibility_changed(false)` is emitted by
-                // `update_auto_hide_animations` when the slide completes, so the
-                // client clears its input region at the right moment.
-                entry.visibility.start_hide(false);
-            } else {
-                // Unmapped/startup: snap fully hidden — no animation, no first-
-                // frame flash. `refresh_auto_hide` re-evaluates once mapped.
-                entry.visibility = auto_hide::AutoHideVisibility::Hidden;
-                crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(
-                    surface, false,
-                );
-            }
+        // A re-registration (the panel re-arming after a popover closes) slides out
+        // as a pointer leave would, unless the pointer already rests in the reveal:
+        // it would not move to "enter" it again. Unmapped, it snaps hidden (no flash).
+        let pointer = self
+            .seats
+            .last_active()
+            .get_pointer()
+            .map(|pointer| pointer.current_location().as_global());
+        entry.cursor_over = pointer.is_some_and(|pointer| {
+            auto_hide::pointer_in_reveal(
+                pointer,
+                self.auto_hide_edge_zone(surface, edge).as_ref(),
+                self.auto_hide_surface_margin_rect(surface, edge),
+            )
+        });
+        if entry.visibility.arm(should_hide, mapped, entry.cursor_over) {
+            crate::wayland::protocols::layer_auto_hide::send_auto_hide_visibility(surface, false);
         }
 
         tracing::info!(
@@ -5273,6 +5272,7 @@ impl Shell {
             ?mode,
             should_hide,
             mapped,
+            pointer_in_reveal = entry.cursor_over,
             "auto_hide: registered surface"
         );
         self.auto_hide_surfaces.push(entry);
