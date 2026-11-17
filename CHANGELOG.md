@@ -1,3 +1,19 @@
+# [2.4.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.3.1...v2.4.0) (2026-11-17)
+
+
+### Bug Fixes
+
+* **auto-hide:** keep a bar shown when the pointer rests in its reveal ([4dc800f](https://github.com/kora-desktop/cosmic-comp/commit/4dc800fad9eca7e9a2f616821c568ae6b9436f67))
+* **halo:** ignore the second click of a double press on stop ([eeca523](https://github.com/kora-desktop/cosmic-comp/commit/eeca523f9658a57acf6bdcaf4da855027b9df30b))
+* **kms:** draw the final pass at the output's exact pixel size ([ac334f1](https://github.com/kora-desktop/cosmic-comp/commit/ac334f12faedf4dccd0c96758484079c3a1cda75))
+* **layers:** show a toast above overlays mapped after it ([764e4ac](https://github.com/kora-desktop/cosmic-comp/commit/764e4ac779f1b977606a8ddc2397c423c7d0c1ca))
+* **shell:** land on the next desktop when the shown one is removed ([1da143f](https://github.com/kora-desktop/cosmic-comp/commit/1da143fbbbc133be7306e63edb569bea06183f6c))
+
+
+### Features
+
+* **header:** ink a first-party app's mark in its tone ([0864734](https://github.com/kora-desktop/cosmic-comp/commit/0864734451d8331568172b4333c55ff14fce78cc))
+
 ## [2.3.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.3.0...v2.3.1) (2026-11-16)
 
 
