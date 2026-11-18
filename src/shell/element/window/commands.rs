@@ -370,18 +370,11 @@ pub fn toggle_pin(app_id: &str, id: &str) -> PinOutcome {
     outcome
 }
 
-/// What the shell says about a pin, as the prototype's `togglePin` does: the
-/// header shows a pin, so only an unpin and a refusal are said.
-pub fn pin_receipt(outcome: PinOutcome, palette_keys: Option<String>) -> Option<(String, Tone)> {
+/// What the shell says about a pin: the header shows the change, so only a
+/// refusal is said (design #354, H07).
+pub fn pin_receipt(outcome: PinOutcome) -> Option<(String, Tone)> {
     match outcome {
-        PinOutcome::Pinned => None,
-        PinOutcome::Unpinned => Some((
-            match palette_keys {
-                Some(keys) => fl!("halo-unpinned", keys = keys),
-                None => fl!("halo-unpinned-unbound"),
-            },
-            Tone::Neutral,
-        )),
+        PinOutcome::Pinned | PinOutcome::Unpinned => None,
         PinOutcome::Full => Some((
             fl!("halo-pin-full", cap = icetron_p::prelude::TRAY_CAP),
             Tone::NeedsYou,
@@ -498,19 +491,11 @@ mod tests {
 
     #[test]
     fn pin_receipts_read_as_the_prototype_writes_them() {
-        let receipt = |outcome, keys: Option<&str>| {
-            pin_receipt(outcome, keys.map(str::to_owned)).map(|(text, tone)| (plain(text), tone))
-        };
-        assert_eq!(receipt(PinOutcome::Pinned, Some("Super+K")), None);
+        let receipt = |outcome| pin_receipt(outcome).map(|(text, tone)| (plain(text), tone));
+        assert_eq!(receipt(PinOutcome::Pinned), None);
+        assert_eq!(receipt(PinOutcome::Unpinned), None);
         assert_eq!(
-            receipt(PinOutcome::Unpinned, Some("Super+K")),
-            Some((
-                "Unpinned — still one Super+K away".to_owned(),
-                Tone::Neutral
-            ))
-        );
-        assert_eq!(
-            receipt(PinOutcome::Full, None),
+            receipt(PinOutcome::Full),
             Some((
                 format!("Tray is full ({TRAY_CAP}) — the halo is a pill, not a toolbar"),
                 Tone::NeedsYou

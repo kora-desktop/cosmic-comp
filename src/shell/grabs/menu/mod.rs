@@ -576,8 +576,7 @@ impl Program for ContextMenu {
                                 &app_id,
                             );
                         }
-                        let keys = commands::palette_binding(&state.common.config.shortcuts);
-                        if let Some((message, tone)) = commands::pin_receipt(outcome, keys) {
+                        if let Some((message, tone)) = commands::pin_receipt(outcome) {
                             state.common.dbus_state.system_toast(message, tone);
                         }
                     });
