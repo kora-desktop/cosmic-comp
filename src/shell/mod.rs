@@ -605,6 +605,8 @@ pub struct Shell {
     resize_indicator: Option<ResizeIndicator>,
     zoom_state: Option<ZoomState>,
     pub game_mode: GameMode,
+    /// Where windows an app closed to reopen come back (`inc.kora.WindowPlaces1`).
+    pub expected_places: crate::dbus::window_places::Expected,
     pub game_processes: Vec<std::sync::Arc<crate::dbus::game_mode::RegisteredGameProcess>>,
     /// Whether tearing (immediate/async page flips) is permitted while in game
     /// mode. Driven by the `inc.kora.GameMode` `SetTearing` D-Bus call; kept
@@ -3593,6 +3595,67 @@ impl Shell {
     }
 
     /// The workspace a window's client was launched into, if any.
+    /// Where the windows of `apps` in Kora workspace `workspace` are, for `inc.kora.WindowPlaces1`.
+    pub fn window_places(
+        &self,
+        workspace: Option<&str>,
+        apps: &[String],
+    ) -> Vec<kora_window_places_client::Place> {
+        let mut places = Vec::new();
+        for (output, set) in self.realms.values().flat_map(|realm| realm.sets.iter()) {
+            for (desktop, space) in set.workspaces.iter().enumerate() {
+                for mapped in space.mapped() {
+                    let window = mapped.active_window();
+                    let app = window.app_id();
+                    if !apps.contains(&app)
+                        || self.client_workspace(&window).as_deref() != workspace
+                    {
+                        continue;
+                    }
+                    let maximized = mapped.is_maximized(false);
+                    // A maximized window keeps the rectangle it unmaximizes to.
+                    let restored = maximized
+                        .then(|| *mapped.last_geometry.lock().unwrap())
+                        .flatten();
+                    let Some(rect) = restored.or_else(|| space.element_geometry(mapped)) else {
+                        continue;
+                    };
+                    places.push(kora_window_places_client::Place {
+                        app,
+                        output: output.name(),
+                        desktop: u32::try_from(desktop).unwrap_or(u32::MAX),
+                        x: rect.loc.x,
+                        y: rect.loc.y,
+                        width: rect.size.w,
+                        height: rect.size.h,
+                        maximized,
+                    });
+                }
+            }
+        }
+        places
+    }
+
+    /// The desktop a placed window goes to, when its realm still has it.
+    fn place_desktop(
+        &self,
+        window: &CosmicSurface,
+        place: &kora_window_places_client::Place,
+    ) -> Option<WorkspaceHandle> {
+        let realm = crate::workspace_tag::realm_for(
+            self.client_workspace(window).as_deref(),
+            &self.active_realm,
+        );
+        let (_, set) = self
+            .realms
+            .get(&realm)?
+            .sets
+            .iter()
+            .find(|(output, _)| output.name() == place.output)?;
+        let desktop = usize::try_from(place.desktop).ok()?;
+        set.workspaces.get(desktop).map(|space| space.handle)
+    }
+
     pub fn client_workspace(&self, window: &CosmicSurface) -> Option<String> {
         if let Some(x11) = window.x11_surface() {
             return crate::workspace_tag::of_x11(x11);
@@ -3756,6 +3819,7 @@ impl Shell {
             appearance_conf: config.cosmic_conf.appearance_settings,
             zoom_state: None,
             game_mode: GameMode::default(),
+            expected_places: Default::default(),
             game_processes: Vec::new(),
             tearing_allowed: false,
             game_mode_fps_limit: 0,
@@ -8814,6 +8878,23 @@ impl Shell {
         };
 
         let should_be_fullscreen = output.is_some();
+        // A window an app closed to reopen comes back where it was (`inc.kora.WindowPlaces1`).
+        let place = (!should_be_fullscreen && transient_parent.is_none())
+            .then(|| {
+                let workspace = self.client_workspace(&window);
+                self.expected_places.take(
+                    workspace.as_deref(),
+                    &window.app_id(),
+                    std::time::Instant::now(),
+                )
+            })
+            .flatten();
+        let workspace_handle = place
+            .as_ref()
+            .and_then(|place| self.place_desktop(&window, place))
+            .or(workspace_handle);
+        let should_be_maximized =
+            should_be_maximized || place.as_ref().is_some_and(|place| place.maximized);
         let pending_game = self
             .game_mode
             .pending_app_id
@@ -9040,6 +9121,15 @@ impl Shell {
         #[cfg(feature = "debug")]
         {
             mapped.set_debug(self.debug_active);
+        }
+        if let Some(place) = place
+            .as_ref()
+            .filter(|place| place.output == workspace_output.name())
+        {
+            *mapped.last_geometry.lock().unwrap() = Some(Rectangle::new(
+                (place.x, place.y).into(),
+                (place.width, place.height).into(),
+            ));
         }
 
         let workspace_empty = workspace.mapped().next().is_none();

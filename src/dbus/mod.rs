@@ -27,6 +27,7 @@ pub mod notifications;
 mod power;
 pub mod runs;
 pub mod speech_to_text;
+pub mod window_places;
 
 #[derive(Clone, Debug)]
 pub struct DBusState(Rc<DBusStateInner>);
