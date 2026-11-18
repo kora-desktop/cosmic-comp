@@ -50,6 +50,22 @@ pub struct Notification {
     pub expire_timeout: i32,
     /// A transient toast is shown once and kept out of the history.
     pub transient: bool,
+    /// What activating it opens.
+    pub target: Option<Target>,
+}
+
+/// A folder or file a notification opens, in kora-notifications' hints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    /// `folder` or `file`.
+    pub kind: &'static str,
+    /// The path as apps in `workspace` name it.
+    pub path: String,
+    pub name: String,
+    /// The Kora workspace it opens in; `None` on the machine.
+    pub workspace: Option<String>,
+    /// The row button's words.
+    pub label: String,
 }
 
 impl DBusState {
@@ -84,6 +100,7 @@ impl DBusState {
             body: String::new(),
             expire_timeout: 5000,
             transient: true,
+            target: None,
         };
         self.system_toast_or(message, tone, notification);
     }
@@ -201,7 +218,7 @@ pub fn plain(text: String) -> String {
 async fn send(state: &DBusState, notification: &Notification) -> zbus::Result<()> {
     let conn = state.session_conn().await?;
     let proxy = NotificationsProxy::new(conn).await?;
-    let transient = Value::Bool(notification.transient);
+    let hints = hints(notification);
     proxy
         .notify(
             &notification.app_name,
@@ -210,17 +227,62 @@ async fn send(state: &DBusState, notification: &Notification) -> zbus::Result<()
             &notification.summary,
             &notification.body,
             &[],
-            HashMap::from([("transient", &transient)]),
+            hints.iter().map(|(key, value)| (*key, value)).collect(),
             notification.expire_timeout,
         )
         .await?;
     Ok(())
 }
 
+/// The hints `Notify` takes for `notification`.
+fn hints(notification: &Notification) -> Vec<(&'static str, Value<'_>)> {
+    let mut hints = vec![("transient", Value::Bool(notification.transient))];
+    let Some(target) = &notification.target else {
+        return hints;
+    };
+    hints.extend([
+        ("x-kora-target-kind", Value::from(target.kind)),
+        ("x-kora-target-id", Value::from(target.path.as_str())),
+        ("x-kora-target-name", Value::from(target.name.as_str())),
+        ("x-kora-action-label", Value::from(target.label.as_str())),
+    ]);
+    if let Some(workspace) = &target.workspace {
+        hints.push(("x-kora-workspace", Value::from(workspace.as_str())));
+    }
+    hints
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fl;
+
+    #[test]
+    fn a_target_becomes_kora_notifications_hints() {
+        let mut notification = Notification {
+            app_name: "Recording".into(),
+            app_icon: String::new(),
+            summary: "Recording failed".into(),
+            body: String::new(),
+            expire_timeout: -1,
+            transient: false,
+            target: None,
+        };
+        assert_eq!(hints(&notification).len(), 1);
+        notification.target = Some(Target {
+            kind: "folder",
+            path: "/home/u/Captures/Recordings".into(),
+            name: "Recordings".into(),
+            workspace: Some("work".into()),
+            label: "Open folder".into(),
+        });
+        let hints: HashMap<_, _> = hints(&notification).into_iter().collect();
+        let text = |key: &str| String::try_from(hints[key].clone()).unwrap();
+        assert_eq!(text("x-kora-target-kind"), "folder");
+        assert_eq!(text("x-kora-target-id"), "/home/u/Captures/Recordings");
+        assert_eq!(text("x-kora-workspace"), "work");
+        assert_eq!(hints["transient"], Value::Bool(false));
+    }
 
     #[test]
     fn the_system_names_itself_from_os_release() {

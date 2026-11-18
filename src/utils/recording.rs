@@ -18,7 +18,7 @@ use tracing::{info, warn};
 use crate::{
     dbus::{
         capture::{StopFailure, StopReply},
-        notifications::{Notification, Tone},
+        notifications::{Notification, Target, Tone},
     },
     fl,
     shell::element::{CosmicSurface, surface::Recording},
@@ -86,7 +86,7 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
             stop(state, id, move |state, reply| {
                 if let Err(StopFailure::Failed(error)) = reply {
                     warn!(%error, "Failed to stop another app's recording");
-                    fail(state, error.clone());
+                    fail(state, error.clone(), None);
                 }
                 surface.set_recording(Recording::Idle);
                 refresh_halo(state, &surface);
@@ -115,7 +115,12 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
                         warn!(%error, "Failed to stop the recording");
                         surface.set_recording(Recording::Idle);
                         refresh_halo(state, &surface);
-                        fail(state, error.clone());
+                        let folder = captures::Destination::for_surface(
+                            state,
+                            &surface,
+                            CaptureKind::Recording,
+                        );
+                        fail(state, error.clone(), folder);
                     }
                 }
             });
@@ -250,9 +255,10 @@ impl Caller {
 }
 
 fn start(state: &mut State, surface: &CosmicSurface) {
+    let folder = captures::Destination::for_surface(state, surface, CaptureKind::Recording);
     begin(state, surface, Caller::Halo, |state, result| {
         if let Err(error) = result {
-            fail(state, error);
+            fail(state, error, folder);
         }
     });
 }
@@ -446,7 +452,10 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
         warn!(%id, %error, "Recording ended with an error");
         surface.set_recording(Recording::Idle);
         refresh_halo(state, &surface);
-        fail(state, error.to_owned());
+        let folder = filing.map(|filing| filing.destination).or_else(|| {
+            captures::Destination::for_surface(state, &surface, CaptureKind::Recording)
+        });
+        fail(state, error.to_owned(), folder);
     }
 }
 
@@ -496,7 +505,7 @@ fn ended_without_window(state: &mut State, id: &str, filing: &Filing, path: &str
         preview_or_file(state, handoff, poster);
     } else {
         warn!(%id, %error, "Recording ended with an error after its window closed");
-        fail(state, error.to_owned());
+        fail(state, error.to_owned(), Some(filing.destination.clone()));
     }
 }
 
@@ -640,14 +649,38 @@ fn refresh_halo(state: &State, surface: &CosmicSurface) {
     crate::shell::element::window::CosmicWindow::refresh_halo(&state.common.shell.read(), surface);
 }
 
-/// A failed recording goes to the shell's error toast, never the inbox (design #354, H10-H11).
-fn fail(state: &State, error: String) {
+/// A failed recording shows in the shell's error toast (design #354, H10-H11), and
+/// reaches the inbox too when the person misses the toast.
+fn fail(state: &mut State, error: String, folder: Option<captures::Destination>) {
     let message = failure_message(&error);
-    let notification = notification(fl!("recording-failed"), error);
-    state
-        .common
-        .dbus_state
-        .system_toast_or(message, Tone::Destructive, notification);
+    let fallback = notification(fl!("recording-failed"), error.clone());
+    let inbox = inbox_notification(error, folder.as_ref());
+    crate::utils::missed::fail(state, message, fallback, inbox);
+}
+
+/// The failure as the inbox keeps it, opening the recordings' folder when there is one.
+fn inbox_notification(error: String, folder: Option<&captures::Destination>) -> Notification {
+    let target = folder
+        .filter(|destination| destination.save_to.is_dir())
+        .map(|destination| {
+            let path = destination.seen_inside(&destination.save_to);
+            Target {
+                kind: "folder",
+                name: path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                path: path.to_string_lossy().into_owned(),
+                workspace: destination.workspace.clone(),
+                label: fl!("recording-open-folder"),
+            }
+        });
+    Notification {
+        expire_timeout: -1,
+        transient: false,
+        target,
+        ..notification(fl!("recording-failed"), error)
+    }
 }
 
 /// The failure and its reason, in the one line a toast has.
@@ -666,6 +699,7 @@ fn notification(summary: String, body: String) -> Notification {
         body,
         expire_timeout: NOTIFICATION_TIMEOUT_MS,
         transient: true,
+        target: None,
     }
 }
 
@@ -678,6 +712,32 @@ mod tests {
         let message = crate::dbus::notifications::plain(failure_message("No space left"));
         assert_eq!(message, "Recording failed. No space left");
         assert_eq!(failure_message(""), fl!("recording-failed"));
+    }
+
+    #[test]
+    fn a_missed_failure_opens_the_recordings_folder_in_its_workspace() {
+        let home = scratch("missed-failure");
+        let destination = captures::Destination::new(
+            CaptureKind::Recording,
+            &home,
+            Some("gameframe"),
+            false,
+            None,
+        );
+        std::fs::create_dir_all(&destination.save_to).unwrap();
+        let inbox = inbox_notification("No space left".into(), Some(&destination));
+        assert!(!inbox.transient);
+        assert_eq!(inbox.summary, fl!("recording-failed"));
+        assert_eq!(inbox.body, "No space left");
+        let target = inbox.target.unwrap();
+        assert_eq!(target.kind, "folder");
+        let inside = destination.seen_inside(&destination.save_to);
+        assert_eq!(Path::new(&target.path), inside);
+        assert_eq!(target.workspace.as_deref(), Some("gameframe"));
+        // A folder that was never made has nothing to open.
+        std::fs::remove_dir_all(&home).unwrap();
+        let inbox = inbox_notification(String::new(), Some(&destination));
+        assert!(inbox.target.is_none());
     }
 
     #[test]

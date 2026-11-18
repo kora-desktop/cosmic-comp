@@ -285,6 +285,12 @@ impl State {
         <B as InputBackend>::Device: 'static,
     {
         crate::wayland::handlers::output_power::set_all_surfaces_dpms_on(self);
+        if !matches!(
+            event,
+            InputEvent::DeviceAdded { .. } | InputEvent::DeviceRemoved { .. }
+        ) {
+            self.common.last_input = std::time::Instant::now();
+        }
 
         use smithay::backend::input::Event;
         match event {

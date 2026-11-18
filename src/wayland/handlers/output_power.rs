@@ -23,6 +23,14 @@ pub fn set_all_surfaces_dpms_on(state: &mut State) {
     }
 }
 
+/// Whether any display is lit; a nested session's window always counts as one.
+pub fn any_display_on(state: &mut State) -> bool {
+    if !matches!(state.backend, BackendData::Kms(_)) {
+        return true;
+    }
+    kms_surfaces(state).any(|surface| surface.get_dpms())
+}
+
 fn kms_surfaces(state: &mut State) -> impl Iterator<Item = &mut Surface> {
     if let BackendData::Kms(kms_state) = &mut state.backend {
         Some(
