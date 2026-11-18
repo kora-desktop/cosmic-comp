@@ -395,7 +395,7 @@ fn move_rows<'a>(desktops: impl IntoIterator<Item = (&'a str, usize, bool)>) -> 
         .collect()
 }
 
-/// Move the window to `to`, or to a new desktop, follow it, and say where it went.
+/// Move the window to `to`, or to a new desktop, and follow it there.
 fn move_and_follow(
     state: &mut State,
     surface: &CosmicSurface,
@@ -409,9 +409,8 @@ fn move_and_follow(
         &mut state.common.workspace_state.update(),
         &state.common.event_loop_handle,
     );
-    if let Some((target, desktop)) = moved {
+    if let Some((target, _)) = moved {
         Shell::set_focus(state, Some(&target), seat, None, true);
-        toast(state, fl!("move-desktop-moved", desktop = desktop.as_str()));
     }
 }
 

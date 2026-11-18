@@ -406,15 +406,6 @@ fn begin(
                         },
                     );
                     surface.set_recording(Recording::Active { id, path, since });
-                    // The game's own indicator says so over a game; a toast cannot.
-                    if caller == Caller::Halo {
-                        let notification = notification(fl!("recording-started"), String::new());
-                        state.common.dbus_state.system_toast_or(
-                            fl!("recording-started"),
-                            Tone::Destructive,
-                            notification,
-                        );
-                    }
                 }
                 refresh_halo(state, &surface);
                 report(state, Ok(()));

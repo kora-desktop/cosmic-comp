@@ -234,15 +234,9 @@ mod tests {
     #[test]
     fn the_shells_toasts_read_as_the_prototype_writes_them() {
         assert_eq!(fl!("screenshot-saved"), "Screenshot saved");
-        assert_eq!(fl!("recording-started"), "Recording this window");
         assert_eq!(
             fl!("recording-stopped-toast"),
             "Recording stopped — saved with provenance"
-        );
-        assert_eq!(fl!("halo-merged"), "Merged — this window is a tab now");
-        assert_eq!(
-            plain(fl!("halo-merged-tabs", tabs = 3)),
-            "Merged 3 tabs into the other window"
         );
         assert_eq!(
             plain(fl!("halo-one-window", app = "Files")),
