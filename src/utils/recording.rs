@@ -86,7 +86,7 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
             stop(state, id, move |state, reply| {
                 if let Err(StopFailure::Failed(error)) = reply {
                     warn!(%error, "Failed to stop another app's recording");
-                    notify(state, fl!("recording-failed"), error.clone());
+                    fail(state, error.clone());
                 }
                 surface.set_recording(Recording::Idle);
                 refresh_halo(state, &surface);
@@ -115,7 +115,7 @@ pub fn toggle(state: &mut State, surface: &CosmicSurface) {
                         warn!(%error, "Failed to stop the recording");
                         surface.set_recording(Recording::Idle);
                         refresh_halo(state, &surface);
-                        notify(state, fl!("recording-failed"), error.clone());
+                        fail(state, error.clone());
                     }
                 }
             });
@@ -252,7 +252,7 @@ impl Caller {
 fn start(state: &mut State, surface: &CosmicSurface) {
     begin(state, surface, Caller::Halo, |state, result| {
         if let Err(error) = result {
-            notify(state, fl!("recording-failed"), error);
+            fail(state, error);
         }
     });
 }
@@ -455,7 +455,7 @@ pub fn stopped(state: &mut State, id: &str, path: &str, error: &str) {
         warn!(%id, %error, "Recording ended with an error");
         surface.set_recording(Recording::Idle);
         refresh_halo(state, &surface);
-        notify(state, fl!("recording-failed"), error.to_owned());
+        fail(state, error.to_owned());
     }
 }
 
@@ -505,7 +505,7 @@ fn ended_without_window(state: &mut State, id: &str, filing: &Filing, path: &str
         preview_or_file(state, handoff, poster);
     } else {
         warn!(%id, %error, "Recording ended with an error after its window closed");
-        notify(state, fl!("recording-failed"), error.to_owned());
+        fail(state, error.to_owned());
     }
 }
 
@@ -649,8 +649,22 @@ fn refresh_halo(state: &State, surface: &CosmicSurface) {
     crate::shell::element::window::CosmicWindow::refresh_halo(&state.common.shell.read(), surface);
 }
 
-fn notify(state: &State, summary: String, body: String) {
-    state.common.dbus_state.notify(notification(summary, body));
+/// A failed recording goes to the shell's error toast, never the inbox (design #354, H10-H11).
+fn fail(state: &State, error: String) {
+    let message = failure_message(&error);
+    let notification = notification(fl!("recording-failed"), error);
+    state
+        .common
+        .dbus_state
+        .system_toast_or(message, Tone::Destructive, notification);
+}
+
+/// The failure and its reason, in the one line a toast has.
+fn failure_message(error: &str) -> String {
+    if error.is_empty() {
+        return fl!("recording-failed");
+    }
+    fl!("recording-failed-because", reason = error)
 }
 
 fn notification(summary: String, body: String) -> Notification {
@@ -667,6 +681,13 @@ fn notification(summary: String, body: String) -> Notification {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failure_toast_carries_its_reason_on_one_line() {
+        let message = crate::dbus::notifications::plain(failure_message("No space left"));
+        assert_eq!(message, "Recording failed. No space left");
+        assert_eq!(failure_message(""), fl!("recording-failed"));
+    }
 
     #[test]
     fn a_game_is_recorded_with_its_sound_and_a_window_without() {
