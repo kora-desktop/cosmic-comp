@@ -131,6 +131,29 @@ mod tests {
         }
     }
 
+    /// The keyboard backlight keys reach the settings daemon's system actions.
+    #[test]
+    fn the_keyboard_backlight_keys_are_bound() {
+        use shortcuts::action::System;
+        use std::str::FromStr;
+
+        let ron = include_str!("../../data/keybindings.ron");
+        let shortcuts: shortcuts::Shortcuts = ron::from_str(ron).unwrap();
+
+        for (key, want) in [
+            ("XF86KbdBrightnessUp", System::KeyboardBrightnessUp),
+            ("XF86KbdBrightnessDown", System::KeyboardBrightnessDown),
+            ("XF86KbdLightOnOff", System::KeyboardBrightnessToggle),
+        ] {
+            let binding = shortcuts::Binding::from_str(key).unwrap();
+            assert_eq!(
+                shortcuts.0.get(&binding),
+                Some(&shortcuts::Action::System(want)),
+                "{key}"
+            );
+        }
+    }
+
     /// The capture shortcuts follow the Mac's, and Print opens the capture toolbar.
     #[test]
     fn capture_shortcuts_match_the_mac() {

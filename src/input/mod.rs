@@ -2840,6 +2840,11 @@ impl State {
                     continue;
                 }
 
+                // An app command (Copy, New tab) belongs to the focused app.
+                if matches!(action, shortcuts::Action::App(_)) {
+                    continue;
+                }
+
                 // Likewise Speech to Text, while no dictation host is listening.
                 if self.common.speech_to_text.passes_through(action) {
                     continue;
