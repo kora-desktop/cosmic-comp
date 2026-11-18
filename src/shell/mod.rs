@@ -5334,6 +5334,7 @@ impl Shell {
         surface: &WlSurface,
         edge: auto_hide::AutoHideEdge,
         mode: auto_hide::AutoHideMode,
+        edge_zone: u32,
     ) {
         let surface_id = surface.id().protocol_id();
         // Remove any existing registration for this surface.
@@ -5370,6 +5371,7 @@ impl Shell {
         // A re-registration (the panel re-arming after a popover closes) slides out
         // as a pointer leave would, unless the pointer already rests in the reveal:
         // it would not move to "enter" it again. Unmapped, it snaps hidden (no flash).
+        // The requested zone is not committed yet: after an unset the committed one is 0.
         let pointer = self
             .seats
             .last_active()
@@ -5378,7 +5380,8 @@ impl Shell {
         entry.cursor_over = pointer.is_some_and(|pointer| {
             auto_hide::pointer_in_reveal(
                 pointer,
-                self.auto_hide_edge_zone(surface, edge).as_ref(),
+                self.auto_hide_edge_zone_sized(surface, edge, edge_zone)
+                    .as_ref(),
                 self.auto_hide_surface_margin_rect(surface, edge),
             )
         });
@@ -5724,38 +5727,40 @@ impl Shell {
         surface: &WlSurface,
         edge: auto_hide::AutoHideEdge,
     ) -> Option<auto_hide::EdgeZone<Global>> {
+        let edge_zone = crate::wayland::protocols::layer_auto_hide::get_surface_edge_zone(surface);
+        self.auto_hide_edge_zone_sized(surface, edge, edge_zone)
+    }
+
+    /// [`Self::auto_hide_edge_zone`], `edge_zone` deep instead of the committed size.
+    fn auto_hide_edge_zone_sized(
+        &self,
+        surface: &WlSurface,
+        edge: auto_hide::AutoHideEdge,
+        edge_zone: u32,
+    ) -> Option<auto_hide::EdgeZone<Global>> {
         let target_id = surface.id();
         for output in self.outputs() {
             let layer_map = layer_map_for_output(output);
             for layer in layer_map.layers() {
                 if layer.wl_surface().id() == target_id {
-                    let edge_zone =
-                        crate::wayland::protocols::layer_auto_hide::get_surface_edge_zone(
-                            layer.wl_surface(),
-                        );
-                    if edge_zone == 0 || self.reveals_held_back_on(output) {
+                    if self.reveals_held_back_on(output) {
                         return None;
                     }
                     let local_geo = layer_map.layer_geometry(layer)?;
                     let global_geo = local_geo.as_local().to_global(output);
-                    let thickness = auto_hide::edge_zone_height(
+                    let mut zone = auto_hide::reveal_zone(
+                        edge,
                         edge_zone,
                         self.output_has_fullscreen(output),
                         output.current_scale().fractional_scale(),
-                    );
-                    return Some(auto_hide::EdgeZone {
-                        edge: edge.reveal_edge(),
-                        rect: auto_hide::edge_zone_rect(
-                            edge,
-                            output.geometry().to_f64(),
-                            global_geo.to_f64(),
-                            thickness,
-                        ),
-                        // A top bar leaves the Halo's stretch of the edge to the Halo.
-                        ceded: (edge == auto_hide::AutoHideEdge::Top)
-                            .then(|| self.halo_top_span(output))
-                            .flatten(),
-                    });
+                        output.geometry().to_f64(),
+                        global_geo.to_f64(),
+                    )?;
+                    // A top bar leaves the Halo's stretch of the edge to the Halo.
+                    zone.ceded = (edge == auto_hide::AutoHideEdge::Top)
+                        .then(|| self.halo_top_span(output))
+                        .flatten();
+                    return Some(zone);
                 }
             }
         }

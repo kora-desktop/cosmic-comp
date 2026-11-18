@@ -17,9 +17,10 @@ impl LayerAutoHideHandler for State {
         surface: &WlSurface,
         edge: AutoHideEdge,
         mode: AutoHideMode,
+        edge_zone: u32,
     ) {
         let mut shell = self.common.shell.write();
-        shell.register_auto_hide(surface, edge, mode);
+        shell.register_auto_hide(surface, edge, mode, edge_zone);
     }
 
     fn auto_hide_unregistered(&mut self, surface: &WlSurface) {
