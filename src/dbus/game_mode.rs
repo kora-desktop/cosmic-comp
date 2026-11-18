@@ -450,7 +450,7 @@ fn pid_of_pidfd(pidfd: &std::os::fd::OwnedFd) -> Option<u32> {
 }
 
 /// A pidfd's fdinfo names its process, or `-1` once it has exited.
-fn pid_in_fdinfo(info: &str) -> Option<u32> {
+pub(crate) fn pid_in_fdinfo(info: &str) -> Option<u32> {
     info.lines()
         .find_map(|line| line.strip_prefix("Pid:"))
         .and_then(|pid| pid.trim().parse().ok())
