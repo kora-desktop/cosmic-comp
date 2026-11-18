@@ -42,6 +42,7 @@ recording-stopped = Recording stopped
 recording-stopped-toast = Recording stopped — saved with provenance
 recording-failed = Recording failed
 recording-failed-because = Recording failed. { $reason }
+recording-open-folder = Open folder
 recording-window-not-capturable = This window cannot be captured
 
 halo-screenshot-window = Screenshot window

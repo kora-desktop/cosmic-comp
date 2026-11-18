@@ -222,6 +222,7 @@ fn toast(state: &State, message: String) {
         body: String::new(),
         expire_timeout: NOTIFICATION_TIMEOUT_MS,
         transient: true,
+        target: None,
     };
     state
         .common

@@ -7,6 +7,7 @@ pub mod desktop_action;
 pub mod env;
 mod ids;
 pub mod memlog;
+pub mod missed;
 pub(crate) use self::ids::id_gen;
 pub mod geometry;
 pub mod global;

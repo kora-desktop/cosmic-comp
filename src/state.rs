@@ -450,6 +450,8 @@ pub struct Common {
     pub idle_notifier_state: IdleNotifierState<State>,
     pub idle_inhibit_manager_state: IdleInhibitManagerState,
     pub idle_inhibiting_surfaces: HashSet<WlSurface>,
+    /// The last keyboard, pointer, touch or tablet input, for [`crate::utils::missed`].
+    pub last_input: Instant,
     pub shm_state: ShmState,
     pub cursor_shape_manager_state: CursorShapeManagerState,
     pub wl_drm_state: Option<WlDrmState<Option<DrmNode>>>,
@@ -1058,6 +1060,7 @@ impl State {
                 idle_notifier_state,
                 idle_inhibit_manager_state,
                 idle_inhibiting_surfaces,
+                last_input: Instant::now(),
                 cosmic_image_capture_source_state,
                 output_capture_source_state,
                 toplevel_capture_source_state,
