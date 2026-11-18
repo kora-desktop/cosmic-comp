@@ -1,3 +1,10 @@
+## [2.6.2](https://github.com/kora-desktop/cosmic-comp/compare/v2.6.1...v2.6.2) (2026-11-18)
+
+
+### Bug Fixes
+
+* **input:** bind the keyboard backlight keys ([fb7595c](https://github.com/kora-desktop/cosmic-comp/commit/fb7595cff154ca5fc687f5bd72f827a1de47675e))
+
 ## [2.6.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.6.0...v2.6.1) (2026-11-18)
 
 
