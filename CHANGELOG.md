@@ -1,3 +1,10 @@
+## [2.6.1](https://github.com/kora-desktop/cosmic-comp/compare/v2.6.0...v2.6.1) (2026-11-18)
+
+
+### Bug Fixes
+
+* **dbus:** answer window places only to Settings outside workspaces ([af652eb](https://github.com/kora-desktop/cosmic-comp/commit/af652ebac6cf2fe39afd875e4ef7e81a13850858))
+
 # [2.6.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.5.0...v2.6.0) (2026-11-18)
 
 
