@@ -990,6 +990,7 @@ impl State {
         crate::dbus::workspaces::init(&handle, &async_executor);
         crate::dbus::display_grants::init(&handle, &async_executor);
         crate::dbus::runs::init(&handle, &async_executor);
+        crate::dbus::window_places::init(&handle, &async_executor);
         let speech_to_text =
             crate::dbus::speech_to_text::SpeechToText::init(&handle, &async_executor);
         // Share the frame-time slot so the KMS surface thread (via Shell) can feed
