@@ -557,6 +557,11 @@ impl CompositorHandler for State {
                 .is_some_and(|layer| !layer_surface_check_inital_configure(layer))
         });
         std::mem::drop(shell);
+        // A cancelled capture overlay takes its Escape at its first drawn frame, before it shows.
+        if layer_output.is_some() && self.capture_hold.is_some() {
+            let _ = (self.common.event_loop_handle)
+                .insert_idle(|state| state.end_capture_hold_if_ready(true));
+        }
 
         if unmapped_layer {
             Common::refocus_off_closed_surface(self, &surface.id());
