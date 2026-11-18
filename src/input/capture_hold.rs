@@ -36,6 +36,9 @@ use crate::{
 /// maps well inside it, and past it a person would think the input had died.
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long a cancelled capture's overlay may still come and take its Escape.
+const OWED: Duration = Duration::from_secs(8);
+
 /// How an event is treated while input is held.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -81,12 +84,12 @@ pub fn is_capture_overlay(layer: Layer, keyboard: KeyboardInteractivity) -> bool
     layer == Layer::Overlay && keyboard == KeyboardInteractivity::Exclusive
 }
 
-/// What a held Escape key event is, if it is one.
+/// Which key a held key event moves, which way, and whether it is Escape in the active layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Escape {
+pub enum Key {
     No,
-    Press(u32),
-    Release(u32),
+    Down { code: u32, escape: bool },
+    Up { code: u32, escape: bool },
 }
 
 /// The Escape that cancelled the capture before its overlay came: its press and release
@@ -104,6 +107,8 @@ pub struct Hold<T> {
     events: VecDeque<T>,
     pointer_held: bool,
     cancel: Option<Cancel<T>>,
+    /// Keys pressed since the hold began.
+    pressed: Vec<u32>,
 }
 
 impl<T> Default for Hold<T> {
@@ -112,33 +117,40 @@ impl<T> Default for Hold<T> {
             events: VecDeque::new(),
             pointer_held: false,
             cancel: None,
+            pressed: Vec::new(),
         }
     }
 }
 
 impl<T> Hold<T> {
     /// Keeps `event` while input is held; hands it back to be handled now otherwise.
-    pub fn take(&mut self, kind: Kind, escape: Escape, event: T) -> Option<T> {
+    pub fn take(&mut self, kind: Kind, key: Key, event: T) -> Option<T> {
         // Motion after a held click would replay the click where the pointer went next.
         if kind == Kind::Motion && !self.pointer_held {
             return Some(event);
         }
-        match (escape, self.cancel.as_mut()) {
-            (Escape::Press(key), None) => {
+        match (key, self.cancel.as_mut()) {
+            (Key::Down { code, escape: true }, None) => {
                 self.cancel = Some(Cancel {
-                    key,
+                    key: code,
                     escape: vec![event],
                     sent: false,
                 });
                 return None;
             }
-            (Escape::Release(key), Some(cancel)) if cancel.key == key => {
+            (Key::Up { code, .. }, Some(cancel)) if cancel.key == code => {
                 // The press is the overlay's already: the release follows it there now.
                 if cancel.sent {
                     return Some(event);
                 }
                 cancel.escape.push(event);
                 return None;
+            }
+            // A key down before the hold, such as the shortcut's Super and Shift: held, its
+            // release would turn a cancelling Escape into Super+Shift+Escape, a shortcut.
+            (Key::Up { code, .. }, _) if !self.pressed.contains(&code) => return Some(event),
+            (Key::Down { code, .. }, _) if !self.pressed.contains(&code) => {
+                self.pressed.push(code);
             }
             _ => {}
         }
@@ -171,6 +183,11 @@ impl<T> Hold<T> {
     pub fn into_events(self) -> VecDeque<T> {
         self.events
     }
+
+    /// Everything held so far, leaving the cancelling Escape owed to the overlay.
+    pub fn take_events(&mut self) -> VecDeque<T> {
+        std::mem::take(&mut self.events)
+    }
 }
 
 type Held = Box<dyn FnOnce(&mut State)>;
@@ -193,6 +210,10 @@ pub struct Active {
     since: Instant,
     /// A capture overlay was up after the cancelling Escape.
     overlay_seen: bool,
+    /// Cancelled with no overlay in time: input reaches the app until the overlay comes.
+    passing: bool,
+    /// The timeout was already extended for a cancelled capture.
+    extended: bool,
 }
 
 impl std::fmt::Debug for Active {
@@ -227,14 +248,20 @@ impl State {
             timer,
             since: Instant::now(),
             overlay_seen: false,
+            passing: false,
+            extended: false,
         });
     }
 
     fn capture_hold_timer(&mut self) -> Option<RegistrationToken> {
+        self.capture_hold_timer_for(TIMEOUT)
+    }
+
+    fn capture_hold_timer_for(&mut self, after: Duration) -> Option<RegistrationToken> {
         self.common
             .event_loop_handle
-            .insert_source(Timer::from_duration(TIMEOUT), |_, _, state| {
-                state.end_capture_hold(End::Timeout);
+            .insert_source(Timer::from_duration(after), |_, _, state| {
+                state.capture_hold_timed_out();
                 TimeoutAction::Drop
             })
             .map_err(|err| warn!(?err, "cannot add a capture hold timer"))
@@ -250,12 +277,19 @@ impl State {
         let Some(kind) = self.capture_hold.as_ref().and(kind(&event)) else {
             return Some(event);
         };
-        let escape = self.escape_of(&event);
+        if self
+            .capture_hold
+            .as_ref()
+            .is_some_and(|active| active.passing)
+        {
+            return Some(event);
+        }
+        let key = self.key_of(&event);
         let active = self.capture_hold.as_mut()?;
         let was_cancelled = active.hold.cancelled();
         let now = active.hold.take(
             kind,
-            escape,
+            key,
             Box::new(move |state: &mut State| state.handle_input_event(event)),
         );
         let cancelled = !was_cancelled && active.hold.cancelled();
@@ -277,25 +311,24 @@ impl State {
         None
     }
 
-    /// Whether `event` presses or lets go of Escape, by its key in the active layout.
-    fn escape_of<B: InputBackend>(&mut self, event: &InputEvent<B>) -> Escape {
+    /// The key `event` presses or lets go of, and whether it is Escape in the active layout.
+    fn key_of<B: InputBackend>(&mut self, event: &InputEvent<B>) -> Key {
         let InputEvent::Keyboard { event } = event else {
-            return Escape::No;
+            return Key::No;
         };
         let keycode = event.key_code();
         let keyboard = self.common.shell.read().seats.last_active().get_keyboard();
-        let Some(keyboard) = keyboard else {
-            return Escape::No;
-        };
-        let escape = keyboard.with_xkb_state(self, |context| {
-            let xkb = context.xkb().lock().unwrap();
-            xkb.raw_syms_for_key_in_layout(keycode, xkb.active_layout())
-                .contains(&Keysym::Escape)
+        let escape = keyboard.is_some_and(|keyboard| {
+            keyboard.with_xkb_state(self, |context| {
+                let xkb = context.xkb().lock().unwrap();
+                xkb.raw_syms_for_key_in_layout(keycode, xkb.active_layout())
+                    .contains(&Keysym::Escape)
+            })
         });
-        match (escape, event.state()) {
-            (false, _) => Escape::No,
-            (true, KeyState::Pressed) => Escape::Press(keycode.raw()),
-            (true, KeyState::Released) => Escape::Release(keycode.raw()),
+        let code = keycode.raw();
+        match event.state() {
+            KeyState::Pressed => Key::Down { code, escape },
+            KeyState::Released => Key::Up { code, escape },
         }
     }
 
@@ -324,12 +357,7 @@ impl State {
             .is_some_and(|focus| {
                 matches!(focus, KeyboardFocusTarget::LayerSurface(layer) if is_capture_layer(&layer))
             });
-        let up = self
-            .common
-            .shell
-            .read()
-            .outputs()
-            .any(|output| layer_map_for_output(output).layers().any(is_capture_layer));
+        let up = self.capture_overlay_up();
         let Some(active) = self.capture_hold.as_mut() else {
             return;
         };
@@ -346,6 +374,8 @@ impl State {
             return;
         }
         active.overlay_seen = true;
+        // The late overlay takes the keyboard: hold again until it is gone.
+        active.passing = false;
         // Keys sent before the overlay has drawn and taken the pointer are lost on it.
         if !(pointer && keyboard) {
             return;
@@ -355,6 +385,50 @@ impl State {
             info!("cancelled capture overlay has the pointer: giving it the Escape");
         }
         for event in escape {
+            event(self);
+        }
+    }
+
+    fn capture_overlay_up(&self) -> bool {
+        self.common
+            .shell
+            .read()
+            .outputs()
+            .any(|output| layer_map_for_output(output).layers().any(is_capture_layer))
+    }
+
+    /// A cancelled capture whose overlay is late still owes it the Escape, once: the held
+    /// input goes to the app now unless the overlay is up, where it would be lost.
+    fn capture_hold_timed_out(&mut self) {
+        let up = self.capture_overlay_up();
+        let owed = self
+            .capture_hold
+            .as_ref()
+            .is_some_and(|active| active.hold.cancelled() && !active.extended);
+        if !owed {
+            self.end_capture_hold(End::Timeout);
+            return;
+        }
+        let Some(timer) = self.capture_hold_timer_for(OWED) else {
+            self.end_capture_hold(End::Timeout);
+            return;
+        };
+        let Some(active) = self.capture_hold.as_mut() else {
+            return;
+        };
+        active.timer = timer;
+        active.extended = true;
+        if up {
+            info!("cancelled capture overlay still up: waiting for it to go");
+            return;
+        }
+        active.passing = true;
+        let held = active.hold.take_events();
+        info!(
+            held = held.len(),
+            "no capture overlay yet: delivering held input, Escape kept for it"
+        );
+        for event in held {
             event(self);
         }
     }
@@ -395,42 +469,64 @@ impl State {
 mod tests {
     use super::*;
 
-    fn key(hold: &mut Hold<&'static str>, name: &'static str) -> bool {
-        hold.take(Kind::Key, Escape::No, name).is_none()
+    const ESC: u32 = 9;
+    const SHIFT: u32 = 50;
+    const SUPER: u32 = 133;
+
+    fn down(code: u32) -> Key {
+        Key::Down {
+            code,
+            escape: code == ESC,
+        }
     }
 
-    const ESC: u32 = 9;
+    fn up(code: u32) -> Key {
+        Key::Up {
+            code,
+            escape: code == ESC,
+        }
+    }
+
+    /// Holds a key typed after the shortcut: `code` stands for the key, `name` for its event.
+    fn typed(hold: &mut Hold<&'static str>, code: u32, name: &'static str) -> bool {
+        let key = if name.ends_with("up") {
+            up(code)
+        } else {
+            down(code)
+        };
+        hold.take(Kind::Key, key, name).is_none()
+    }
 
     /// The bug: a click right after Super+Shift+6 pressed the button under the colour picker.
     #[test]
     fn a_click_after_the_shortcut_waits_for_the_overlay() {
         let mut hold = Hold::default();
-        assert!(hold.take(Kind::Press, Escape::No, "press").is_none());
-        assert!(hold.take(Kind::Press, Escape::No, "release").is_none());
+        assert!(hold.take(Kind::Press, Key::No, "press").is_none());
+        assert!(hold.take(Kind::Press, Key::No, "release").is_none());
         assert_eq!(Vec::from(hold.into_events()), ["press", "release"]);
     }
 
     #[test]
     fn keys_wait_but_the_cursor_moves() {
         let mut hold = Hold::default();
-        assert!(key(&mut hold, "shift up"));
+        assert!(typed(&mut hold, 38, "a down"));
         assert_eq!(
-            hold.take(Kind::Motion, Escape::No, "move"),
+            hold.take(Kind::Motion, Key::No, "move"),
             Some("move"),
             "motion goes through"
         );
-        assert!(key(&mut hold, "a"));
-        assert_eq!(Vec::from(hold.into_events()), ["shift up", "a"]);
+        assert!(typed(&mut hold, 38, "a up"));
+        assert_eq!(Vec::from(hold.into_events()), ["a down", "a up"]);
     }
 
     /// A selection dragged before the overlay maps must start where the button went down.
     #[test]
     fn motion_after_a_held_click_stays_behind_it() {
         let mut hold = Hold::default();
-        assert!(hold.take(Kind::Motion, Escape::No, "hover").is_some());
-        assert!(hold.take(Kind::Press, Escape::No, "press").is_none());
-        assert!(hold.take(Kind::Motion, Escape::No, "drag").is_none());
-        assert!(hold.take(Kind::Press, Escape::No, "release").is_none());
+        assert!(hold.take(Kind::Motion, Key::No, "hover").is_some());
+        assert!(hold.take(Kind::Press, Key::No, "press").is_none());
+        assert!(hold.take(Kind::Motion, Key::No, "drag").is_none());
+        assert!(hold.take(Kind::Press, Key::No, "release").is_none());
         assert_eq!(Vec::from(hold.into_events()), ["press", "drag", "release"]);
     }
 
@@ -439,31 +535,65 @@ mod tests {
     #[test]
     fn escape_before_the_overlay_cancels_it_and_the_typing_goes_under_it() {
         let mut hold = Hold::default();
-        assert!(key(&mut hold, "shift up"));
-        assert!(
-            hold.take(Kind::Key, Escape::Press(ESC), "esc down")
-                .is_none()
-        );
+        assert!(hold.take(Kind::Key, down(ESC), "esc down").is_none());
         assert!(hold.cancelled());
-        assert!(
-            hold.take(Kind::Key, Escape::Release(ESC), "esc up")
-                .is_none()
-        );
-        for name in ["q down", "q up", "a down", "a up", "d down", "d up"] {
+        assert!(hold.take(Kind::Key, up(ESC), "esc up").is_none());
+        for (code, name) in [
+            (24, "q down"),
+            (24, "q up"),
+            (38, "a down"),
+            (38, "a up"),
+            (40, "d down"),
+            (40, "d up"),
+        ] {
             assert!(
-                key(&mut hold, name),
+                typed(&mut hold, code, name),
                 "{name} held until the overlay is gone"
             );
         }
-        assert!(hold.take(Kind::Press, Escape::No, "click").is_none());
+        assert!(hold.take(Kind::Press, Key::No, "click").is_none());
         assert_eq!(hold.escape_for_overlay(), ["esc down", "esc up"]);
         assert!(hold.escape_for_overlay().is_empty(), "the Escape goes once");
         assert_eq!(
             Vec::from(hold.into_events()),
             [
-                "shift up", "q down", "q up", "a down", "a up", "d down", "d up", "click"
+                "q down", "q up", "a down", "a up", "d down", "d up", "click"
             ],
             "everything but the Escape, in order"
+        );
+    }
+
+    /// The bug: Super+Shift+6 let go, then Escape: the held Super and Shift releases came after
+    /// the Escape, which became Super+Shift+Escape, so the picker stayed up and took the typing.
+    #[test]
+    fn the_shortcut_keys_let_go_before_the_escape_go_through() {
+        let mut hold = Hold::default();
+        assert_eq!(
+            hold.take(Kind::Key, up(SHIFT), "shift up"),
+            Some("shift up")
+        );
+        assert_eq!(
+            hold.take(Kind::Key, up(SUPER), "super up"),
+            Some("super up")
+        );
+        assert!(hold.take(Kind::Key, down(ESC), "esc down").is_none());
+        assert!(hold.take(Kind::Key, up(ESC), "esc up").is_none());
+        assert!(typed(&mut hold, 24, "q down"));
+        assert!(typed(&mut hold, 24, "q up"));
+        assert_eq!(hold.escape_for_overlay(), ["esc down", "esc up"]);
+        assert_eq!(Vec::from(hold.into_events()), ["q down", "q up"]);
+    }
+
+    /// A key pressed after the shortcut keeps its release behind its press.
+    #[test]
+    fn a_key_pressed_while_held_lets_go_in_order() {
+        let mut hold = Hold::default();
+        assert!(typed(&mut hold, SHIFT, "shift down"));
+        assert!(typed(&mut hold, 38, "a down"));
+        assert!(typed(&mut hold, SHIFT, "shift up"));
+        assert_eq!(
+            Vec::from(hold.into_events()),
+            ["shift down", "a down", "shift up"]
         );
     }
 
@@ -471,16 +601,10 @@ mod tests {
     #[test]
     fn an_escape_let_go_late_follows_its_press() {
         let mut hold = Hold::default();
-        assert!(
-            hold.take(Kind::Key, Escape::Press(ESC), "esc down")
-                .is_none()
-        );
-        assert!(key(&mut hold, "x down"));
+        assert!(hold.take(Kind::Key, down(ESC), "esc down").is_none());
+        assert!(typed(&mut hold, 53, "x down"));
         assert_eq!(hold.escape_for_overlay(), ["esc down"]);
-        assert_eq!(
-            hold.take(Kind::Key, Escape::Release(ESC), "esc up"),
-            Some("esc up")
-        );
+        assert_eq!(hold.take(Kind::Key, up(ESC), "esc up"), Some("esc up"));
         assert_eq!(Vec::from(hold.into_events()), ["x down"]);
     }
 
@@ -489,24 +613,30 @@ mod tests {
     #[test]
     fn a_timeout_delivers_all_but_the_cancelling_escape() {
         let mut hold = Hold::default();
-        for name in ["a down", "a up"] {
-            assert!(key(&mut hold, name));
-        }
-        assert!(hold.take(Kind::Press, Escape::No, "click").is_none());
+        assert!(typed(&mut hold, 38, "a down"));
+        assert!(typed(&mut hold, 38, "a up"));
+        assert!(hold.take(Kind::Press, Key::No, "click").is_none());
         assert_eq!(Vec::from(hold.into_events()), ["a down", "a up", "click"]);
 
         let mut hold = Hold::default();
-        assert!(key(&mut hold, "a down"));
-        assert!(
-            hold.take(Kind::Key, Escape::Press(ESC), "esc down")
-                .is_none()
-        );
-        assert!(
-            hold.take(Kind::Key, Escape::Release(ESC), "esc up")
-                .is_none()
-        );
-        assert!(key(&mut hold, "b down"));
+        assert!(typed(&mut hold, 38, "a down"));
+        assert!(hold.take(Kind::Key, down(ESC), "esc down").is_none());
+        assert!(hold.take(Kind::Key, up(ESC), "esc up").is_none());
+        assert!(typed(&mut hold, 56, "b down"));
         assert_eq!(Vec::from(hold.into_events()), ["a down", "b down"]);
+    }
+
+    /// An overlay later than the timeout: the typing goes to the app at once, and the Escape
+    /// waits for the overlay so it closes when it comes.
+    #[test]
+    fn a_late_overlay_still_gets_its_escape() {
+        let mut hold = Hold::default();
+        assert!(hold.take(Kind::Key, down(ESC), "esc down").is_none());
+        assert!(hold.take(Kind::Key, up(ESC), "esc up").is_none());
+        assert!(typed(&mut hold, 24, "q down"));
+        assert_eq!(Vec::from(hold.take_events()), ["q down"]);
+        assert_eq!(hold.escape_for_overlay(), ["esc down", "esc up"]);
+        assert!(hold.into_events().is_empty());
     }
 
     /// Typing while the overlay maps, with no Escape, is the overlay's once it has the
@@ -514,8 +644,8 @@ mod tests {
     #[test]
     fn typing_without_escape_waits_for_the_overlay() {
         let mut hold = Hold::default();
-        for name in ["a down", "a up", "b down", "b up"] {
-            assert!(key(&mut hold, name));
+        for (code, name) in [(38, "a down"), (38, "a up"), (56, "b down"), (56, "b up")] {
+            assert!(typed(&mut hold, code, name));
         }
         assert!(!hold.cancelled());
         assert!(hold.escape_for_overlay().is_empty());
