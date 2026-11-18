@@ -129,7 +129,13 @@ pub trait LayerAutoHideHandler {
     fn layer_auto_hide_state(&mut self) -> &mut LayerAutoHideState;
 
     /// Called when a surface registers for compositor-driven auto-hide.
-    fn auto_hide_registered(&mut self, surface: &WlSurface, edge: AutoHideEdge, mode: AutoHideMode);
+    fn auto_hide_registered(
+        &mut self,
+        surface: &WlSurface,
+        edge: AutoHideEdge,
+        mode: AutoHideMode,
+        edge_zone: u32,
+    );
 
     /// Called when a surface unregisters from auto-hide.
     fn auto_hide_unregistered(&mut self, surface: &WlSurface);
@@ -309,7 +315,7 @@ where
                 });
                 drop(guard);
                 // Notify compositor to register auto-hide tracking
-                state.auto_hide_registered(&surface, auto_edge, auto_mode);
+                state.auto_hide_registered(&surface, auto_edge, auto_mode, edge_zone);
             }
             layer_auto_hide_v1::Request::UnsetAutoHide => {
                 let guard = data.lock().unwrap();

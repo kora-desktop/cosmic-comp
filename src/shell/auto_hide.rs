@@ -179,6 +179,27 @@ pub fn margin_rect<K>(
     (w > 0 && h > 0).then(|| Rectangle::new((x, y).into(), (w, h).into()))
 }
 
+/// The strip `configured` deep along `edge` that reveals `surface`; none at 0.
+pub fn reveal_zone<K>(
+    edge: AutoHideEdge,
+    configured: u32,
+    fullscreen: bool,
+    scale: f64,
+    output: Rectangle<f64, K>,
+    surface: Rectangle<f64, K>,
+) -> Option<EdgeZone<K>> {
+    (configured != 0).then(|| EdgeZone {
+        edge: edge.reveal_edge(),
+        rect: edge_zone_rect(
+            edge,
+            output,
+            surface,
+            edge_zone_height(configured, fullscreen, scale),
+        ),
+        ceded: None,
+    })
+}
+
 /// Whether `pointer` rests where it reveals the surface: its edge zone or its margin.
 pub fn pointer_in_reveal<K>(
     pointer: Point<f64, K>,
@@ -974,6 +995,50 @@ mod tests {
         let mut shown = AutoHideVisibility::Visible;
         assert!(!shown.arm(false, true, false));
         assert!(matches!(shown, AutoHideVisibility::Visible));
+    }
+
+    /// The panel unsets auto-hide while its menu is open (its committed zone drops to 0)
+    /// and sets it again when a click on the edge row closes the menu.
+    #[test]
+    fn an_edge_click_that_closes_the_menu_keeps_the_bar() {
+        let output = Rectangle::<i32, Logical>::new((0, 0).into(), (1280, 800).into());
+        // The panel's surface reaches past the edge to hold its shadow: no margin.
+        let bar = Rectangle::<i32, Logical>::new((0, 714).into(), (1280, 100).into());
+        let margin = margin_rect(AutoHideEdge::Bottom, output, bar);
+        assert_eq!(margin, None);
+        let zone = |configured| {
+            reveal_zone(
+                AutoHideEdge::Bottom,
+                configured,
+                false,
+                1.5,
+                output.to_f64(),
+                bar.to_f64(),
+            )
+        };
+        let edge_row = (640.0, 799.5).into();
+
+        let committed = zone(0);
+        assert!(
+            !pointer_in_reveal(edge_row, committed.as_ref(), margin),
+            "the committed zone after an unset misses the pointer"
+        );
+        let mut slid = AutoHideVisibility::Visible;
+        slid.arm(true, true, false);
+        assert!(matches!(slid, AutoHideVisibility::SlidingOut { .. }));
+
+        let requested = zone(4);
+        let held = pointer_in_reveal(edge_row, requested.as_ref(), margin);
+        assert!(held, "the zone the registration asks for holds the bar");
+        let mut kept = AutoHideVisibility::Visible;
+        assert!(!kept.arm(true, true, held));
+        assert_eq!(kept.update(), None);
+        assert!(matches!(kept, AutoHideVisibility::Visible));
+        assert!(!pointer_in_reveal(
+            (640.0, 400.0).into(),
+            requested.as_ref(),
+            margin
+        ));
     }
 
     #[test]
