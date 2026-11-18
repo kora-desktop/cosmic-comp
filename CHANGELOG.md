@@ -1,3 +1,19 @@
+# [2.6.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.5.0...v2.6.0) (2026-11-18)
+
+
+### Bug Fixes
+
+* **halo:** drop the started, moved, merged and unpinned toasts ([794e67d](https://github.com/kora-desktop/cosmic-comp/commit/794e67ddf32159a1590002807ecdfa0bf335361a)), closes [#354](https://github.com/kora-desktop/cosmic-comp/issues/354)
+* **halo:** show recording failures in the shell's error toast ([93ac41c](https://github.com/kora-desktop/cosmic-comp/commit/93ac41c97299ef7052a0a97c214e59acc7e1ffbd)), closes [#354](https://github.com/kora-desktop/cosmic-comp/issues/354)
+* **input:** let an Escape after a capture shortcut cancel it ([00ef5a1](https://github.com/kora-desktop/cosmic-comp/commit/00ef5a1168d9a69ad0ba657398a27fcfb94375a7))
+* **shell:** maximize a new window in a workspace that is not on screen ([3b1837c](https://github.com/kora-desktop/cosmic-comp/commit/3b1837c171a0ca9dd714dd2ee913aa361a890129))
+
+
+### Features
+
+* **halo:** send a missed recording failure to the inbox too ([700d01d](https://github.com/kora-desktop/cosmic-comp/commit/700d01ddfee1f45b291cb2f73b4529edf747ac08))
+* **shell:** serve window places so reopened apps land where they were ([bddcd01](https://github.com/kora-desktop/cosmic-comp/commit/bddcd0180c032cfaa160c329b76800f931714db2))
+
 # [2.5.0](https://github.com/kora-desktop/cosmic-comp/compare/v2.4.2...v2.5.0) (2026-11-17)
 
 
