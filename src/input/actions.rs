@@ -54,6 +54,9 @@ impl State {
                     | Action::Shortcut(shortcuts::Action::Debug)
                     | Action::Shortcut(shortcuts::Action::System(
                         shortcuts::action::System::InputSourceSwitch
+                            | shortcuts::action::System::KeyboardBrightnessDown
+                            | shortcuts::action::System::KeyboardBrightnessUp
+                            | shortcuts::action::System::KeyboardBrightnessToggle
                             | shortcuts::action::System::BrightnessDown
                             | shortcuts::action::System::BrightnessUp
                             | shortcuts::action::System::VolumeLower
@@ -188,6 +191,9 @@ impl State {
             Action::Terminate => {
                 self.common.should_stop = true;
             }
+
+            // Routed to the focused app before it gets here.
+            Action::App(_) => (),
 
             #[cfg(feature = "debug")]
             Action::Debug => {
