@@ -11287,15 +11287,27 @@ impl Shell {
 
         self.unminimize_request(&mapped.active_window(), seat, loop_handle);
 
+        // Any realm: a window can open maximized in a workspace that is not on screen.
         let (original_layer, floating_layer, mut original_geometry) = if let Some(set) = self
-            .workspaces_mut()
-            .sets
+            .realms
             .values_mut()
+            .flat_map(|realm| realm.sets.values_mut())
             .find(|set| set.sticky_layer.mapped().any(|m| m == mapped))
         {
             let geometry = set.sticky_layer.element_geometry(mapped).unwrap();
             (ManagedLayer::Sticky, &mut set.sticky_layer, geometry)
-        } else if let Some(workspace) = self.space_for_mut(mapped) {
+        } else if let Some(workspace) = self
+            .realms
+            .values_mut()
+            .flat_map(|realm| realm.spaces_mut())
+            .find(|workspace| {
+                workspace.mapped().any(|m| m == mapped)
+                    || workspace
+                        .minimized_windows
+                        .iter()
+                        .any(|m| m.mapped() == Some(mapped))
+            })
+        {
             let layer = if workspace.is_tiled(&mapped.active_window()) {
                 ManagedLayer::Tiling
             } else {
