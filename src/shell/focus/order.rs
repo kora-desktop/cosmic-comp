@@ -25,7 +25,7 @@ use crate::{
     shell::{
         CosmicSurface, SeatExt, Shell, Workspace, WorkspaceDelta,
         focus::target::KeyboardFocusTarget, game_group::Placement,
-        layout::floating::FloatingLayout,
+        layer_cover::indicator_namespace, layout::floating::FloatingLayout,
     },
     utils::{
         geometry::*,
@@ -990,11 +990,6 @@ fn shows_over_game(layer: OverGame) -> bool {
     layer.from_launcher || layer.osd_indicator || layer.keyboard_client
 }
 
-/// The OSD's own namespace, or `osd-<what>` for another key's answer, as a capture's preview.
-fn indicator_namespace(namespace: &str) -> bool {
-    namespace == "osd" || namespace.starts_with("osd-")
-}
-
 /// The apps with an overlay-layer surface up that takes the keyboard.
 fn keyboard_overlay_clients(shell: &Shell) -> Vec<Client> {
     let mut clients = Vec::new();
@@ -1055,6 +1050,14 @@ fn layer_surfaces<'a>(
         // Its workspace is off screen: not drawn, not hit, not captured — and
         // no fade below may bring it back on a screen it does not belong to.
         if layer_visibility.off_realm_surfaces.contains(&surface_id) {
+            return None;
+        }
+        // A desktop's preview is drawn without the overview, so nothing is under it there.
+        if !matches!(
+            element_filter,
+            ElementFilter::ExcludeWorkspaceOverview | ElementFilter::ExcludeTransientShell
+        ) && layer_visibility.covered_surfaces.contains(&surface_id)
+        {
             return None;
         }
         let (mut visible, mut alpha) = layer_visibility.surface_visibility(&surface_id);
