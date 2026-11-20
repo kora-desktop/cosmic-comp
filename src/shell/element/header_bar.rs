@@ -615,13 +615,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .as_deref()
             .filter(|name| !name.is_empty())
             .or_else(|| self.app_identity.map(AppIdentityId::label));
-        match name {
-            Some(name) => (
-                name,
-                Some(self.title.as_str()).filter(|title| !title.is_empty() && *title != name),
-            ),
-            None => (self.title.as_str(), None),
-        }
+        icetron_p::utils::window_label::window_label(name.unwrap_or_default(), &self.title)
     }
 
     /// Convert to an iced Element using icetron's app_header.

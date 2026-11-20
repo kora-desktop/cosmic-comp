@@ -2438,3 +2438,51 @@ fn first_party_headers_in_shipped_themes() {
         }
     }
 }
+
+/// Apps put their own name in the window title; the header already leads with it,
+/// so the title part keeps only what it adds ("Terminal — ~" under Terminal reads "~").
+#[test]
+fn the_window_title_drops_the_app_name_the_header_already_shows() {
+    let header = |theme: &CompTheme, app: &'static str, title: &'static str, scale: f32| {
+        render(theme, 575.0, scale, move |h| {
+            h.title(title)
+                .app_name(app)
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .window_width(575.0)
+        })
+    };
+    if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+        for dark in [true, false] {
+            let theme = integrated_theme(dark);
+            let mode = if dark { "dark" } else { "light" };
+            for (app, title) in [("Terminal", "Terminal — ~"), ("Edit", "notes.md — Edit")] {
+                let (mut renderer, viewport, _cache) = header(&theme, app, title, 1.5);
+                let name = format!("label-{}-{mode}.png", app.to_lowercase());
+                save(&mut renderer, &viewport, &dir, &name);
+            }
+        }
+    }
+    for theme in [integrated_theme(true), theme()] {
+        for (app, title, expected) in [
+            ("Terminal", "Terminal — ~", Some("~")),
+            ("Terminal", "Terminal — htop", Some("htop")),
+            ("Edit", "notes.md - Edit", Some("notes.md")),
+            ("Remember", "Remember", None),
+            ("Remember", "Remember —", None),
+            ("Files", "Files settings", Some("Files settings")),
+        ] {
+            let (mut renderer, _, _cache) = header(&theme, app, title, 1.0);
+            let (name, selection) = identity(&mut renderer, &theme);
+            assert_eq!(name.expect("the app name").source, app, "{title}");
+            assert_eq!(
+                selection.as_ref().map(|text| text.source.as_str()),
+                expected,
+                "{app}: {title}"
+            );
+        }
+    }
+}
+
