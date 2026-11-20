@@ -11,23 +11,38 @@
 //! appetite is served first, so a short label keeps all of its text and the
 //! long one absorbs the shortfall. Children marked rigid (an icon, a control)
 //! are never asked to give anything up.
+//!
+//! A child may also give way in an order of its own (it is cut to the floor
+//! before a later one is touched) and may leave a smaller stand-in behind
+//! when it is dropped.
 
 use iced_core::{
     Element, Event, Layout, Length, Point, Rectangle, Shell, Size, Vector, layout, mouse, overlay,
     renderer,
-    widget::{Operation, Tree, Widget},
+    widget::{Operation, Tree, Widget, tree},
 };
+
+/// How one child of the row gives way.
+#[derive(Debug, Clone, Copy, Default)]
+struct Slot {
+    /// The child may be squeezed.
+    elastic: bool,
+    /// `Some(rank)` if the child may be dropped once squeezing is not enough,
+    /// lowest rank first. `None` never leaves.
+    priority: Option<u8>,
+    /// The child lines up on the shared baseline.
+    baseline: bool,
+    /// Elastic children give way in ascending order.
+    order: u8,
+    /// The child this one stands in for while it is dropped.
+    stands_in_for: Option<usize>,
+}
 
 /// See the module documentation.
 pub struct ElasticRow<'a, Message, Theme, Renderer> {
     children: Vec<Element<'a, Message, Theme, Renderer>>,
-    /// Parallel to `children`: whether the child may be squeezed.
-    elastic: Vec<bool>,
-    /// Parallel to `children`: `Some(rank)` if the child may be dropped once
-    /// squeezing is not enough, lowest rank first. `None` never leaves.
-    priority: Vec<Option<u8>>,
-    /// Parallel to `children`: whether the child lines up on the shared baseline.
-    baseline: Vec<bool>,
+    /// Parallel to `children`: how each one gives way.
+    slots: Vec<Slot>,
     spacing: f32,
     /// Width to leave for siblings laid out after this row.
     reserve: f32,
@@ -48,9 +63,7 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
     pub fn new() -> Self {
         Self {
             children: Vec::new(),
-            elastic: Vec::new(),
-            priority: Vec::new(),
-            baseline: Vec::new(),
+            slots: Vec::new(),
             spacing: 0.0,
             reserve: 0.0,
             reserve_min: 0.0,
@@ -62,9 +75,11 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
     #[must_use]
     pub fn push_rigid(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         self.children.push(child.into());
-        self.elastic.push(false);
-        self.priority.push(None);
-        self.baseline.push(false);
+        self.slots.push(Slot {
+            elastic: false,
+            priority: None,
+            ..Slot::default()
+        });
         self
     }
 
@@ -72,9 +87,11 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
     #[must_use]
     pub fn push_elastic(mut self, child: impl Into<Element<'a, Message, Theme, Renderer>>) -> Self {
         self.children.push(child.into());
-        self.elastic.push(true);
-        self.priority.push(None);
-        self.baseline.push(false);
+        self.slots.push(Slot {
+            elastic: true,
+            priority: None,
+            ..Slot::default()
+        });
         self
     }
 
@@ -87,9 +104,11 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         child: impl Into<Element<'a, Message, Theme, Renderer>>,
     ) -> Self {
         self.children.push(child.into());
-        self.elastic.push(false);
-        self.priority.push(Some(rank));
-        self.baseline.push(false);
+        self.slots.push(Slot {
+            elastic: false,
+            priority: Some(rank),
+            ..Slot::default()
+        });
         self
     }
 
@@ -103,9 +122,36 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
         child: impl Into<Element<'a, Message, Theme, Renderer>>,
     ) -> Self {
         self.children.push(child.into());
-        self.elastic.push(true);
-        self.priority.push(Some(rank));
-        self.baseline.push(false);
+        self.slots.push(Slot {
+            elastic: true,
+            priority: Some(rank),
+            ..Slot::default()
+        });
+        self
+    }
+
+    /// Add a rigid stand-in for the child pushed just before, shown only while
+    /// that child is dropped: a status that has no room for its words keeps its dot.
+    #[must_use]
+    pub fn push_stand_in(
+        mut self,
+        child: impl Into<Element<'a, Message, Theme, Renderer>>,
+    ) -> Self {
+        let owner = self.children.len().checked_sub(1);
+        self = self.push_rigid(child);
+        if let Some(last) = self.slots.last_mut() {
+            last.stands_in_for = owner;
+        }
+        self
+    }
+
+    /// Have the elastic child just pushed give way only once every child of a
+    /// lower order is down to the floor. Children of one order share the cut.
+    #[must_use]
+    pub fn gives_way_in_order(mut self, order: u8) -> Self {
+        if let Some(last) = self.slots.last_mut() {
+            last.order = order;
+        }
         self
     }
 
@@ -113,8 +159,8 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
     /// marked so, as CSS `align-items: baseline` does; the group is centred as one.
     #[must_use]
     pub fn on_baseline(mut self) -> Self {
-        if let Some(last) = self.baseline.last_mut() {
-            *last = true;
+        if let Some(last) = self.slots.last_mut() {
+            last.baseline = true;
         }
         self
     }
@@ -167,32 +213,67 @@ impl<'a, Message, Theme, Renderer> ElasticRow<'a, Message, Theme, Renderer> {
 
 /// How wide each child may be, given `budget` to share between them.
 ///
+/// Elastic children give way by order: the lowest order is cut towards
+/// `floor` before the next is touched. If cutting everything to the floor is
+/// not enough, the order no longer matters and the width is shared evenly.
 /// Returns `None` when everything fits, so the caller can keep the layout it
 /// already has instead of measuring a second time.
-fn shares(natural: &[f32], elastic: &[bool], budget: f32) -> Option<Vec<f32>> {
-    if natural.iter().sum::<f32>() <= budget {
+fn shares(
+    natural: &[f32],
+    elastic: &[bool],
+    order: &[u8],
+    floor: f32,
+    budget: f32,
+) -> Option<Vec<f32>> {
+    let total: f32 = natural.iter().sum();
+    if total <= budget {
         return None;
     }
-    let rigid: f32 = natural
-        .iter()
-        .zip(elastic)
-        .filter_map(|(width, elastic)| (!elastic).then_some(*width))
-        .sum();
-    let mut left = (budget - rigid).max(0.0);
-    let mut order: Vec<usize> = (0..natural.len()).filter(|index| elastic[*index]).collect();
-    order.sort_by(|a, b| natural[*a].total_cmp(&natural[*b]));
-
     let mut shares = natural.to_vec();
-    let mut remaining = order.len();
-    for index in order {
-        // `remaining` is never zero: the loop runs exactly `order.len()` times.
-        let even = left / remaining as f32;
-        let share = natural[index].min(even);
+    let mut shortfall = total - budget;
+    let spare = |index: usize| natural[index] - natural[index].min(floor);
+    let squeezable: Vec<usize> = (0..natural.len()).filter(|index| elastic[*index]).collect();
+    if squeezable.iter().map(|&index| spare(index)).sum::<f32>() < shortfall {
+        let rigid: f32 = (0..natural.len())
+            .filter(|index| !elastic[*index])
+            .map(|index| natural[index])
+            .sum();
+        share_evenly(&mut shares, natural, &squeezable, (budget - rigid).max(0.0));
+        return Some(shares);
+    }
+    let mut orders: Vec<u8> = squeezable.iter().map(|&index| order[index]).collect();
+    orders.sort_unstable();
+    orders.dedup();
+    for current in orders {
+        let group: Vec<usize> = squeezable
+            .iter()
+            .copied()
+            .filter(|&index| order[index] == current)
+            .collect();
+        let cut = shortfall.min(group.iter().map(|&index| spare(index)).sum());
+        if cut <= 0.0 {
+            continue;
+        }
+        let wanted: f32 = group.iter().map(|&index| natural[index]).sum();
+        share_evenly(&mut shares, natural, &group, wanted - cut);
+        shortfall -= cut;
+    }
+    Some(shares)
+}
+
+/// Max-min fairness: the smallest appetite in `group` is served first.
+fn share_evenly(shares: &mut [f32], natural: &[f32], group: &[usize], total: f32) {
+    let mut group = group.to_vec();
+    group.sort_by(|a, b| natural[*a].total_cmp(&natural[*b]));
+    let mut left = total;
+    let mut remaining = group.len();
+    for index in group {
+        // `remaining` is never zero: the loop runs exactly `group.len()` times.
+        let share = natural[index].min(left / remaining as f32);
         shares[index] = share;
         left -= share;
         remaining -= 1;
     }
-    Some(shares)
 }
 
 /// Which children must leave for the rest to fit `budget`.
@@ -201,16 +282,18 @@ fn shares(natural: &[f32], elastic: &[bool], budget: f32) -> Option<Vec<f32>> {
 /// natural width, if that is already smaller). Only when even that does not
 /// fit does the lowest-ranked droppable child leave, and the question is
 /// asked again. A child with no rank never leaves, so the row always keeps
-/// its essentials however narrow it gets.
+/// its essentials however narrow it gets. A stand-in is hidden until the
+/// child it stands in for leaves.
 fn drops(
     natural: &[f32],
     elastic: &[bool],
     priority: &[Option<u8>],
+    stands_in_for: &[Option<usize>],
     spacing: f32,
     budget: f32,
     floor: f32,
 ) -> Vec<bool> {
-    let mut dropped = vec![false; natural.len()];
+    let mut dropped: Vec<bool> = stands_in_for.iter().map(Option::is_some).collect();
     loop {
         let alive: Vec<usize> = (0..natural.len())
             .filter(|index| !dropped[*index])
@@ -241,8 +324,23 @@ fn drops(
             break;
         };
         dropped[victim] = true;
+        for (index, owner) in stands_in_for.iter().enumerate() {
+            if *owner == Some(victim) {
+                dropped[index] = false;
+            }
+        }
     }
     dropped
+}
+
+/// Which children the last layout dropped; they are neither drawn nor sent events.
+#[derive(Default)]
+struct Hidden(Vec<bool>);
+
+impl Hidden {
+    fn of(tree: &Tree) -> &[bool] {
+        &tree.state.downcast_ref::<Self>().0
+    }
 }
 
 impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
@@ -250,6 +348,14 @@ impl<Message, Theme, Renderer> Widget<Message, Theme, Renderer>
 where
     Renderer: iced_core::Renderer,
 {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<Hidden>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(Hidden::default())
+    }
+
     fn children(&self) -> Vec<Tree> {
         self.children.iter().map(Tree::new).collect()
     }
@@ -305,11 +411,16 @@ where
             })
             .collect();
         let natural: Vec<f32> = nodes.iter().map(|node| node.size().width).collect();
+        let elastic: Vec<bool> = self.slots.iter().map(|slot| slot.elastic).collect();
+        let priority: Vec<Option<u8>> = self.slots.iter().map(|slot| slot.priority).collect();
+        let stands_in_for: Vec<Option<usize>> =
+            self.slots.iter().map(|slot| slot.stands_in_for).collect();
 
         let dropped = drops(
             &natural,
-            &self.elastic,
-            &self.priority,
+            &elastic,
+            &priority,
+            &stands_in_for,
             self.spacing,
             outer,
             self.floor,
@@ -321,8 +432,15 @@ where
 
         let kept: Vec<usize> = (0..count).filter(|index| !dropped[*index]).collect();
         let kept_natural: Vec<f32> = kept.iter().map(|&index| natural[index]).collect();
-        let kept_elastic: Vec<bool> = kept.iter().map(|&index| self.elastic[index]).collect();
-        if let Some(shares) = shares(&kept_natural, &kept_elastic, budget) {
+        let kept_elastic: Vec<bool> = kept.iter().map(|&index| elastic[index]).collect();
+        let kept_order: Vec<u8> = kept.iter().map(|&index| self.slots[index].order).collect();
+        if let Some(shares) = shares(
+            &kept_natural,
+            &kept_elastic,
+            &kept_order,
+            self.floor,
+            budget,
+        ) {
             for (slot, &index) in kept.iter().enumerate() {
                 if shares[slot] >= natural[index] {
                     continue;
@@ -336,6 +454,7 @@ where
                 );
             }
         }
+        tree.state.downcast_mut::<Hidden>().0.clone_from(&dropped);
         let zero = layout::Limits::new(Size::ZERO, Size::ZERO);
         for index in (0..count).filter(|index| dropped[*index]) {
             nodes[index] = self.children[index].as_widget_mut().layout(
@@ -350,7 +469,7 @@ where
             .iter()
             .enumerate()
             .map(|(index, node)| {
-                (self.baseline[index] && !dropped[index])
+                (self.slots[index].baseline && !dropped[index])
                     .then(|| node.baseline().unwrap_or(node.size().height))
             })
             .collect();
@@ -364,7 +483,7 @@ where
         let height = nodes
             .iter()
             .enumerate()
-            .filter(|(index, _)| !dropped[*index] && !self.baseline[*index])
+            .filter(|(index, _)| !dropped[*index] && !self.slots[*index].baseline)
             .map(|(_, node)| node.size().height)
             .fold(above + below, f32::max);
         let group_top = (height - above - below) / 2.0;
@@ -404,12 +523,15 @@ where
         operation: &mut dyn Operation,
     ) {
         operation.container(None, layout.bounds());
+        let hidden = Hidden::of(tree).to_vec();
         operation.traverse(&mut |operation| {
             self.children
                 .iter_mut()
                 .zip(&mut tree.children)
                 .zip(layout.children())
-                .for_each(|((child, state), layout)| {
+                .enumerate()
+                .filter(|(index, _)| !hidden.get(*index).copied().unwrap_or(false))
+                .for_each(|(_, ((child, state), layout))| {
                     child
                         .as_widget_mut()
                         .operate(state, layout, renderer, operation);
@@ -427,11 +549,14 @@ where
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
-        for ((child, tree), layout) in self
+        let hidden = Hidden::of(tree).to_vec();
+        for (_, ((child, tree), layout)) in self
             .children
             .iter_mut()
             .zip(&mut tree.children)
             .zip(layout.children())
+            .enumerate()
+            .filter(|(index, _)| !hidden.get(*index).copied().unwrap_or(false))
         {
             child
                 .as_widget_mut()
@@ -447,11 +572,14 @@ where
         viewport: &Rectangle,
         renderer: &Renderer,
     ) -> mouse::Interaction {
+        let hidden = Hidden::of(tree);
         self.children
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
-            .map(|((child, tree), layout)| {
+            .enumerate()
+            .filter(|(index, _)| !hidden.get(*index).copied().unwrap_or(false))
+            .map(|(_, ((child, tree), layout))| {
                 child
                     .as_widget()
                     .mouse_interaction(tree, layout, cursor, viewport, renderer)
@@ -470,12 +598,17 @@ where
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
-        for ((child, tree), layout) in self
+        let hidden = Hidden::of(tree);
+        for (_, ((child, tree), layout)) in self
             .children
             .iter()
             .zip(&tree.children)
             .zip(layout.children())
-            .filter(|(_, layout)| layout.bounds().intersects(viewport))
+            .enumerate()
+            .filter(|(index, (_, layout))| {
+                !hidden.get(*index).copied().unwrap_or(false)
+                    && layout.bounds().intersects(viewport)
+            })
         {
             child
                 .as_widget()
@@ -516,45 +649,103 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::shares;
+    use super::{drops, shares};
+
+    /// One order and no floor: plain max-min fairness.
+    fn even(natural: &[f32], elastic: &[bool], budget: f32) -> Option<Vec<f32>> {
+        shares(natural, elastic, &vec![0; natural.len()], 0.0, budget)
+    }
 
     #[test]
     fn everything_that_fits_is_left_alone() {
-        assert!(shares(&[10.0, 20.0], &[true, true], 100.0).is_none());
-        assert!(shares(&[50.0, 50.0], &[true, true], 100.0).is_none());
+        assert!(even(&[10.0, 20.0], &[true, true], 100.0).is_none());
+        assert!(even(&[50.0, 50.0], &[true, true], 100.0).is_none());
     }
 
     #[test]
     fn a_short_label_keeps_its_text_while_the_long_one_gives_way() {
         // A 500px title beside a 20px app name in 200px: the app name is cheap
         // enough to serve in full, so only the title is cut.
-        let shares = shares(&[500.0, 20.0], &[true, true], 200.0).unwrap();
+        let shares = even(&[500.0, 20.0], &[true, true], 200.0).unwrap();
         assert_eq!(shares, vec![180.0, 20.0]);
     }
 
     #[test]
     fn two_greedy_children_split_the_width_evenly() {
-        let shares = shares(&[500.0, 400.0], &[true, true], 200.0).unwrap();
+        let shares = even(&[500.0, 400.0], &[true, true], 200.0).unwrap();
         assert_eq!(shares, vec![100.0, 100.0]);
     }
 
     #[test]
     fn a_rigid_child_is_never_squeezed() {
         // The icon is rigid: it keeps 20px and the texts share the other 80.
-        let shares = shares(&[20.0, 500.0, 400.0], &[false, true, true], 100.0).unwrap();
+        let shares = even(&[20.0, 500.0, 400.0], &[false, true, true], 100.0).unwrap();
         assert_eq!(shares, vec![20.0, 40.0, 40.0]);
     }
 
     #[test]
     fn a_budget_swallowed_by_rigid_children_never_goes_negative() {
-        let shares = shares(&[300.0, 50.0], &[false, true], 100.0).unwrap();
+        let shares = even(&[300.0, 50.0], &[false, true], 100.0).unwrap();
         assert_eq!(shares, vec![300.0, 0.0]);
         assert!(shares.iter().all(|share| *share >= 0.0));
     }
 
     #[test]
     fn no_elastic_child_leaves_every_width_alone() {
-        let shares = shares(&[300.0, 50.0], &[false, false], 100.0).unwrap();
+        let shares = even(&[300.0, 50.0], &[false, false], 100.0).unwrap();
         assert_eq!(shares, vec![300.0, 50.0]);
+    }
+
+    #[test]
+    fn a_lower_order_is_cut_to_the_floor_before_a_higher_one_gives_anything() {
+        // A 300px subtitle and a 200px status in 400px, floor 80: the subtitle
+        // goes first, all of the 100px shortfall from it.
+        let cut = shares(&[300.0, 200.0], &[true, true], &[0, 1], 80.0, 400.0).unwrap();
+        assert_eq!(cut, vec![200.0, 200.0]);
+        // 260px short: the subtitle stops at 80, the status gives the other 40.
+        let cut = shares(&[300.0, 200.0], &[true, true], &[0, 1], 80.0, 240.0).unwrap();
+        assert_eq!(cut, vec![80.0, 160.0]);
+    }
+
+    #[test]
+    fn past_every_floor_the_order_no_longer_matters() {
+        let cut = shares(&[300.0, 200.0], &[true, true], &[0, 1], 80.0, 100.0).unwrap();
+        assert_eq!(cut, vec![50.0, 50.0]);
+    }
+
+    #[test]
+    fn a_stand_in_shows_only_once_its_child_has_left() {
+        // Name, status (droppable, with a 6px dot standing in), subtitle (droppable last).
+        let natural = [40.0, 200.0, 6.0, 150.0];
+        let elastic = [false, true, false, true];
+        let priority = [None, Some(0), None, Some(1)];
+        let stands_in_for = [None, None, Some(1), None];
+        let at = |budget| {
+            drops(
+                &natural,
+                &elastic,
+                &priority,
+                &stands_in_for,
+                0.0,
+                budget,
+                80.0,
+            )
+        };
+        assert_eq!(at(400.0), vec![false, false, true, false]);
+        assert_eq!(
+            at(200.0),
+            vec![false, false, true, false],
+            "both at the floor fit"
+        );
+        assert_eq!(
+            at(150.0),
+            vec![false, true, false, false],
+            "the status keeps its dot"
+        );
+        assert_eq!(
+            at(60.0),
+            vec![false, true, false, true],
+            "the dot stays to the end"
+        );
     }
 }
