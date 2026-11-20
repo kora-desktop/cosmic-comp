@@ -12,7 +12,7 @@
     (modifiers: [Super, Ctrl], key: "Down"): Focus(Down),
     (modifiers: [Super], key: "h"): Focus(Left),
     (modifiers: [Super], key: "j"): Focus(Down),
-    // Super+K: the window's palette in Halo themes, focus up in bar themes.
+    // Super+K: the window's palette where the shell draws the header, focus up in bar themes.
     (modifiers: [Super], key: "k"): WindowCommands,
     (modifiers: [Super, Shift], key: "m"): MoveToDesktop,
     (modifiers: [Super], key: "F10"): FocusHalo,
