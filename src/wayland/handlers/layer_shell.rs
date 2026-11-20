@@ -13,6 +13,29 @@ use smithay::{
     },
 };
 
+/// Where a new layer surface goes.
+#[derive(Debug, PartialEq)]
+enum LayerPlacement {
+    /// No output asked for: the active one.
+    Active,
+    On(Output),
+    /// The output asked for is gone or no longer shown.
+    Gone,
+}
+
+/// `requested` is `None` when the client named no output, and `Some(None)` when the
+/// output it named no longer exists.
+fn place_layer(
+    requested: Option<Option<Output>>,
+    shown: impl Fn(&Output) -> bool,
+) -> LayerPlacement {
+    match requested {
+        None => LayerPlacement::Active,
+        Some(Some(output)) if shown(&output) => LayerPlacement::On(output),
+        Some(_) => LayerPlacement::Gone,
+    }
+}
+
 impl WlrLayerShellHandler for State {
     fn shell_state(&mut self) -> &mut WlrLayerShellState {
         &mut self.common.layer_shell_state
@@ -28,10 +51,18 @@ impl WlrLayerShellHandler for State {
         let mut shell = self.common.shell.write();
         let seat = shell.seats.last_active().clone();
         let no_output = wl_output.is_none();
-        let output = wl_output
-            .as_ref()
-            .and_then(Output::from_resource)
-            .unwrap_or_else(|| seat.active_output());
+        let requested = wl_output.as_ref().map(Output::from_resource);
+        let output = match place_layer(requested, |output| shell.outputs().any(|o| o == output)) {
+            LayerPlacement::Active => seat.active_output(),
+            LayerPlacement::On(output) => output,
+            LayerPlacement::Gone => {
+                // Its output went away before the surface was made: placed elsewhere, it
+                // would never be closed, and a client with a surface per output shows two.
+                std::mem::drop(shell);
+                surface.send_close();
+                return;
+            }
+        };
         let layer_surface = LayerSurface::new(surface, namespace);
         if no_output {
             shell
@@ -292,5 +323,53 @@ mod tests {
             false,
             false
         ));
+    }
+}
+
+#[cfg(test)]
+mod placement_tests {
+    use super::{LayerPlacement, place_layer};
+    use smithay::output::{Output, PhysicalProperties, Subpixel};
+
+    fn output(name: &str) -> Output {
+        Output::new(
+            name.into(),
+            PhysicalProperties {
+                size: (600, 340).into(),
+                subpixel: Subpixel::Unknown,
+                make: String::new(),
+                model: String::new(),
+                serial_number: String::new(),
+            },
+        )
+    }
+
+    #[test]
+    fn a_surface_without_an_output_goes_to_the_active_one() {
+        assert_eq!(place_layer(None, |_| true), LayerPlacement::Active);
+    }
+
+    #[test]
+    fn a_surface_goes_on_the_shown_output_it_names() {
+        let dp = output("DP-1");
+        assert_eq!(
+            place_layer(Some(Some(dp.clone())), |o| *o == dp),
+            LayerPlacement::On(dp)
+        );
+    }
+
+    #[test]
+    fn a_surface_for_a_gone_output_is_closed_not_moved() {
+        assert_eq!(place_layer(Some(None), |_| true), LayerPlacement::Gone);
+    }
+
+    #[test]
+    fn a_surface_for_an_output_no_longer_shown_is_closed() {
+        let unplugged = output("DP-2");
+        let shown = output("DP-1");
+        assert_eq!(
+            place_layer(Some(Some(unplugged)), |o| *o == shown),
+            LayerPlacement::Gone
+        );
     }
 }
