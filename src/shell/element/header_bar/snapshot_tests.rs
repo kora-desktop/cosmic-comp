@@ -1774,14 +1774,16 @@ fn the_label_goes_before_the_name_or_the_controls_are_squeezed() {
             .cloned()
             .expect("the app name");
         let chip = drawn.into_iter().find(|text| text.color == color);
-        (chip, name, icons)
+        let dots = run_dots(&mut renderer, HALO_CHIP_DOT_PX, color).len();
+        (chip, name, icons, dots)
     };
-    let (roomy, name, roomy_icons) = at(500.0);
+    let (roomy, name, roomy_icons, _) = at(500.0);
     assert!(roomy.is_some_and(|chip| chip.ellipsized), "room to cut to");
     assert!(!name.ellipsized);
     // The name and every control are as they were: only the words left.
-    let (tight, name, tight_icons) = at(480.0);
+    let (tight, name, tight_icons, dots) = at(480.0);
     assert!(tight.is_none(), "the label stays at 480px");
+    assert_eq!(dots, 1, "the run keeps its dot");
     assert_eq!(name.drawn(), "Photo Editor");
     assert!(!name.ellipsized);
     assert_eq!(tight_icons, roomy_icons);
@@ -1968,10 +1970,10 @@ fn the_integrated_header_keeps_what_each_tier_keeps() {
     // Glyph, shot, record, hidden files, new window, park, fill, fullscreen, close.
     assert_eq!(tier(900.0, false), (9, true));
     assert_eq!(tier(700.0, false), (9, true));
-    // Glyph, shot, record, park, fill, close.
-    assert_eq!(tier(500.0, false), (6, false));
+    // Glyph, shot, record, park, fill, close; the title stays while it has room.
+    assert_eq!(tier(500.0, false), (6, true));
     // Glyph, shot, record, close.
-    assert_eq!(tier(360.0, false), (4, false));
+    assert_eq!(tier(360.0, false), (4, true));
     assert_eq!(
         super::integrated_tier(1200.0, true),
         4,
@@ -2064,6 +2066,144 @@ fn the_integrated_header_cuts_a_long_run_label_clear_of_its_controls() {
             first_control.x
         );
     }
+}
+
+/// What a narrow integrated header shows of a running Chat window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Shed {
+    Nothing,
+    TitleCut,
+    WordsCut,
+    WordsGone,
+    TitleGone,
+}
+
+/// The window title is cut first, then the run's words; the words leave for
+/// their dot before the title goes, and the dot stays at every width.
+#[test]
+fn the_integrated_header_cuts_the_title_and_the_run_before_it_drops_them() {
+    let theme = integrated_theme(true);
+    let color = run_color(RunState::Running, &theme);
+    let at = |width: f32, title: &str| {
+        let (mut renderer, viewport, _cache) = render(&theme, width, 1.0, |h| {
+            h.title(title)
+                .app_name("Chat")
+                .focused(true)
+                .on_close(())
+                .on_minimize(())
+                .on_maximize(())
+                .tray(capture_tray(false))
+                .window_width(width)
+                .run(Some(halo_run(RunState::Running, 0)), ())
+        });
+        let (name, selection) = identity(&mut renderer, &theme);
+        let words = drawn_text(&mut renderer)
+            .into_iter()
+            .find(|text| text.color == color);
+        let dots = run_dots(&mut renderer, HALO_CHIP_DOT_PX, color).len();
+        (
+            renderer,
+            viewport,
+            name.expect("the app name"),
+            selection,
+            words,
+            dots,
+        )
+    };
+
+    if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+        for dark in [true, false] {
+            let theme = integrated_theme(dark);
+            for (app, title, run) in [("Chat", "#general", true), ("Edit", "notes.md", false)] {
+                let (mut renderer, viewport, _cache) = render(&theme, 575.0, 1.5, |h| {
+                    h.title(title)
+                        .app_name(app)
+                        .focused(true)
+                        .on_close(())
+                        .on_minimize(())
+                        .on_maximize(())
+                        .tray(capture_tray(false))
+                        .window_width(575.0)
+                        .run(run.then(|| halo_run(RunState::Running, 0)), ())
+                });
+                let mode = if dark { "dark" } else { "light" };
+                let name = format!("integrated-{}-575-{mode}.png", app.to_lowercase());
+                save(&mut renderer, &viewport, &dir, &name);
+            }
+        }
+    }
+
+    // The laptop's 575px Chat window: room for all of it.
+    let (_, _, name, selection, words, dots) = at(575.0, "#general");
+    assert_eq!(name.drawn(), "Chat");
+    let selection = selection.expect("the channel at 575px");
+    assert!(!selection.ellipsized, "{selection:?}");
+    let words = words.expect("the run's words at 575px");
+    assert!(!words.ellipsized, "{words:?}");
+    assert_eq!(dots, 1);
+
+    let mut seen = Vec::new();
+    for tier_range in [(800.0_f32, 1000.0_f32), (600.0, 800.0), (400.0, 600.0)] {
+        let mut last = Shed::Nothing;
+        let mut width = tier_range.1 - 2.0;
+        while width >= tier_range.0 {
+            let (_, _, name, selection, words, dots) = at(width, LONG);
+            assert!(!name.ellipsized, "{width}px: the name was cut");
+            assert_eq!(dots, 1, "{width}px: the run lost its dot");
+            let shed = match (&selection, &words) {
+                (Some(selection), Some(words)) => {
+                    assert!(words.drawn().len() > 3, "{width}px: {words:?}");
+                    if words.ellipsized {
+                        assert!(
+                            selection.ellipsized,
+                            "{width}px: words cut before the title"
+                        );
+                        Shed::WordsCut
+                    } else if selection.ellipsized {
+                        Shed::TitleCut
+                    } else {
+                        Shed::Nothing
+                    }
+                }
+                (Some(_), None) => Shed::WordsGone,
+                (None, None) => Shed::TitleGone,
+                (None, Some(_)) => panic!("{width}px: the title left before the run's words"),
+            };
+            assert!(shed >= last, "{width}px: {shed:?} after {last:?}");
+            last = shed;
+            seen.push(shed);
+            width -= 4.0;
+        }
+    }
+    for shed in [Shed::TitleCut, Shed::WordsCut] {
+        assert!(seen.contains(&shed), "no width ever reached {shed:?}");
+    }
+}
+
+/// With no room for the run's words, the status keeps its dot beside the name.
+#[test]
+fn the_integrated_run_keeps_its_dot_when_its_words_have_no_room() {
+    let theme = integrated_theme(true);
+    let color = run_color(RunState::Running, &theme);
+    let (mut renderer, viewport, _cache) = render(&theme, 400.0, 1.0, |h| {
+        h.title(LONG)
+            .app_name("Photo Editor")
+            .focused(true)
+            .on_close(())
+            .on_minimize(())
+            .on_maximize(())
+            .tray(capture_tray(false))
+            .window_width(400.0)
+            .run(Some(long_run(RunState::Running)), ())
+    });
+    if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+        save(&mut renderer, &viewport, &dir, "integrated-run-dot-400.png");
+    }
+    let drawn = drawn_text(&mut renderer);
+    assert!(drawn.iter().all(|text| text.color != color), "{drawn:?}");
+    let (name, _) = identity(&mut renderer, &theme);
+    assert_eq!(name.expect("the app name").drawn(), "Photo Editor");
+    assert_eq!(run_dots(&mut renderer, HALO_CHIP_DOT_PX, color).len(), 1);
 }
 
 /// Kora's first-party window ids, the name each had before design #352 and the one it has now.
