@@ -106,6 +106,7 @@ pub mod element;
 pub mod focus;
 pub mod game_group;
 pub mod grabs;
+pub mod layer_cover;
 pub mod layer_open;
 pub mod layer_resize_anim;
 pub mod layer_slide;
