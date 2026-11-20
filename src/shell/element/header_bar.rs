@@ -720,7 +720,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     }
 
     /// Design #308: one opaque row inside the frame with a passive glyph, the
-    /// app's name and the controls its tier keeps. No tier has a ⋯ button.
+    /// app's name and the controls its tier keeps. The narrowest folds Park and Fill behind ⋯.
     fn into_integrated_element(
         self,
         theme: &'a CompTheme,
@@ -885,6 +885,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 self.on_fullscreen.clone(),
                 fullscreen_label(self.fullscreen),
                 wide,
+            ),
+            (
+                HaloControl::More,
+                icons::MORE_HORIZONTAL,
+                self.on_commands.clone(),
+                fl!("halo-all-commands"),
+                tier == 4 && (self.on_minimize.is_some() || self.on_maximize.is_some()),
             ),
             (
                 HaloControl::Close,

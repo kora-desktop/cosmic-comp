@@ -1946,7 +1946,7 @@ fn the_integrated_divider_is_one_opaque_device_row() {
 }
 
 /// WINDOW-CHROME.md's tiers: capture and Close stay at every width, Park and
-/// Fill until the narrowest, the rest only on wide headers; never a ⋯.
+/// Fill until the narrowest, which folds them behind ⋯; the rest only on wide headers.
 #[test]
 fn the_integrated_header_keeps_what_each_tier_keeps() {
     let theme = integrated_theme(true);
@@ -1972,8 +1972,8 @@ fn the_integrated_header_keeps_what_each_tier_keeps() {
     assert_eq!(tier(700.0, false), (9, true));
     // Glyph, shot, record, park, fill, close; the title stays while it has room.
     assert_eq!(tier(500.0, false), (6, true));
-    // Glyph, shot, record, close.
-    assert_eq!(tier(360.0, false), (4, true));
+    // Glyph, shot, record, ⋯, close.
+    assert_eq!(tier(360.0, false), (5, true));
     assert_eq!(
         super::integrated_tier(1200.0, true),
         4,
@@ -2486,3 +2486,99 @@ fn the_window_title_drops_the_app_name_the_header_already_shows() {
     }
 }
 
+/// Below 400 px Park and Fill leave the integrated row; a ⋯ then opens the commands,
+/// which hold Minimize and Fill / restore, so a narrow window can still do both.
+#[test]
+fn the_narrowest_integrated_header_folds_park_and_fill_behind_more() {
+    if let Some(dir) = std::env::var_os("INTEGRATED_SNAPSHOT_DIR") {
+        for dark in [true, false] {
+            let mode = if dark { "dark" } else { "light" };
+            let (mut renderer, viewport, _cache) =
+                render(&integrated_theme(dark), 360.0, 1.5, |h| {
+                    h.title("Home")
+                        .app_name("Files")
+                        .focused(true)
+                        .window_width(360.0)
+                        .on_commands(())
+                        .on_minimize(())
+                        .on_maximize(())
+                        .on_close(())
+                });
+            save(
+                &mut renderer,
+                &viewport,
+                &dir,
+                &format!("narrow-files-360-{mode}.png"),
+            );
+        }
+    }
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Msg {
+        Commands,
+        Close,
+        Minimize,
+        Maximize,
+    }
+    let theme = integrated_theme(true);
+    let build = |width: f32, commands: bool, window: bool| {
+        let mut header = header_bar::<Msg>()
+            .theme(&theme)
+            .title("Home")
+            .app_name("Files")
+            .focused(true)
+            .window_width(width)
+            .on_close(Msg::Close);
+        if commands {
+            header = header.on_commands(Msg::Commands);
+        }
+        if window {
+            header = header.on_minimize(Msg::Minimize).on_maximize(Msg::Maximize);
+        }
+        header.into_element()
+    };
+    // What a click on each drawn control sends, left to right.
+    let presses = |width: f32, commands: bool, window: bool| {
+        let (mut renderer, _, _cache) = render(&theme, width, 1.0, |h| h);
+        let size = Size::new(width, ssd_header_render_height(&theme) as f32);
+        let mut ui = UserInterface::build(
+            build(width, commands, window),
+            size,
+            user_interface::Cache::default(),
+            &mut renderer,
+        );
+        ui.draw(
+            &mut renderer,
+            &iced_core::Theme::Dark,
+            &Style::default(),
+            mouse::Cursor::Unavailable,
+        );
+        let icons = control_icons(&mut renderer);
+        let mut sent = Vec::new();
+        for icon in icons {
+            let mut ui = UserInterface::build(
+                build(width, commands, window),
+                size,
+                user_interface::Cache::default(),
+                &mut renderer,
+            );
+            let at = iced_core::Point::new(icon.center_x(), icon.center_y());
+            for event in [
+                iced_core::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+                iced_core::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+            ] {
+                ui.update(
+                    &[event],
+                    mouse::Cursor::Available(at),
+                    &mut renderer,
+                    &mut sent,
+                );
+            }
+        }
+        sent
+    };
+    use Msg::*;
+    assert_eq!(presses(700.0, true, true), [Minimize, Maximize, Close]);
+    assert_eq!(presses(360.0, true, true), [Commands, Close]);
+    assert_eq!(presses(360.0, true, false), [Close], "nothing folded, no ⋯");
+    assert_eq!(presses(360.0, false, true), [Close], "no commands to open");
+}
