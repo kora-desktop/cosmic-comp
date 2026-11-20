@@ -1709,6 +1709,20 @@ mod tests {
         assert_eq!(plain(glyph_hint("Example", None)), "Example — commands");
     }
 
+    /// Super+K and Super+Shift+M open the palette and the Move to Desktop chooser under
+    /// either header the shell draws; Kora's own themes use the integrated one.
+    #[test]
+    fn window_keys_reach_the_shell_under_the_integrated_header_too() {
+        let with = |style| {
+            let mut tokens = DEFAULT_THEME_PAIR.load(false);
+            tokens.window_header_style = style;
+            CompTheme::new(Arc::new(tokens), false)
+        };
+        assert!(uses_shell_palette(&with(WindowHeaderStyle::Halo)));
+        assert!(uses_shell_palette(&with(WindowHeaderStyle::Integrated)));
+        assert!(!uses_shell_palette(&with(WindowHeaderStyle::Bar)));
+    }
+
     fn halo_theme() -> CompTheme {
         let mut theme = DEFAULT_THEME_PAIR.load(false);
         theme.window_header_style = WindowHeaderStyle::Halo;
