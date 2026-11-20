@@ -460,7 +460,8 @@ pub(super) fn open_commands(
     let shell = state.common.shell.read();
     let theme = shell.theme().clone();
     // The palette anchors to the window rather than the click: its rect, where
-    // its pill ends below the rect's top, and the output it is on.
+    // its pill ends below the rect's top, and the part of its output that
+    // panels leave free.
     let (ui, anchor) = if let Some((ui, mapped)) =
         shell
             .element_for_surface(surface)
@@ -475,11 +476,11 @@ pub(super) fn open_commands(
                 .find(|output| output.geometry().contains(center))
                 .cloned()
                 .unwrap_or_else(|| seat.active_output());
-            (
-                geometry,
-                header_bar::halo_pill_bottom(&theme),
-                output.geometry(),
-            )
+            let usable = smithay::desktop::layer_map_for_output(&output)
+                .non_exclusive_zone()
+                .as_local()
+                .to_global(&output);
+            (geometry, header_bar::halo_pill_bottom(&theme), usable)
         });
         (ui, anchor)
     } else {
@@ -555,7 +556,10 @@ pub(super) fn open_commands(
         .as_ref()
         .and_then(|app| app.name.clone())
         .unwrap_or_else(|| fallback_name(surface));
-    let palette = Palette::new(surface.app_id(), scope, list.clone());
+    let mut palette = Palette::new(surface.app_id(), scope, list.clone());
+    if let Some((_, _, output)) = anchor {
+        palette = palette.max_height((output.size.h - 2 * PALETTE_EDGE_MARGIN) as f32);
+    }
     open.store(true, Ordering::SeqCst);
     crate::frametrace::mark(format_args!("palette opened ({})", surface.app_id()));
     ui.force_update();
