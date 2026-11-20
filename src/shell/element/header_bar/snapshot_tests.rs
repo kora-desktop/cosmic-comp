@@ -304,20 +304,22 @@ fn layout_with(
     configure: impl for<'a> FnOnce(HeaderBar<'a, ()>) -> HeaderBar<'a, ()>,
 ) -> (Renderer, Viewport, user_interface::Cache) {
     render(theme, width, scale, |header| {
-        configure(
-            header
-                .title(title)
-                .app_name("Files")
-                .focused(true)
-                .on_close(())
-                .on_minimize(())
-                .on_maximize(())
-                .tray(capture_tray(false))
-                .quick_settings(hidden_files(false))
-                .on_fullscreen((), false)
-                .on_new_window(()),
-        )
+        configure(files(header.title(title)))
     })
+}
+
+/// The Files window [`layout_with`] draws: every control the header has.
+fn files(header: HeaderBar<'_, ()>) -> HeaderBar<'_, ()> {
+    header
+        .app_name("Files")
+        .focused(true)
+        .on_close(())
+        .on_minimize(())
+        .on_maximize(())
+        .tray(capture_tray(false))
+        .quick_settings(hidden_files(false))
+        .on_fullscreen((), false)
+        .on_new_window(())
 }
 
 /// Build, update and draw an arbitrary header in a `width`-wide window.
@@ -1979,6 +1981,83 @@ fn the_integrated_header_keeps_what_each_tier_keeps() {
         4,
         "panels take the narrowest tier"
     );
+}
+
+/// Tab walks exactly the controls each integrated tier draws, from each breakpoint's low edge.
+#[test]
+fn integrated_keyboard_focus_walks_what_each_tier_draws() {
+    use HaloControl::*;
+    let theme = integrated_theme(true);
+    for (width, panel, run, expected) in [
+        (
+            800.0,
+            false,
+            false,
+            vec![
+                Tray(0),
+                Tray(1),
+                QuickSetting(0),
+                NewWindow,
+                Minimize,
+                Maximize,
+                Fullscreen,
+                Close,
+            ],
+        ),
+        (
+            600.0,
+            false,
+            true,
+            vec![
+                Chip,
+                Tray(0),
+                Tray(1),
+                QuickSetting(0),
+                NewWindow,
+                Minimize,
+                Maximize,
+                Fullscreen,
+                Close,
+            ],
+        ),
+        (
+            400.0,
+            false,
+            false,
+            vec![Tray(0), Tray(1), Minimize, Maximize, Close],
+        ),
+        (
+            399.0,
+            false,
+            true,
+            vec![Chip, Tray(0), Tray(1), More, Close],
+        ),
+        (1200.0, true, false, vec![Tray(0), Tray(1), More, Close]),
+    ] {
+        fn build(header: HeaderBar<'_, ()>, width: f32, panel: bool) -> HeaderBar<'_, ()> {
+            files(header)
+                .on_commands(())
+                .window_width(width)
+                .panel(panel)
+        }
+        let header = build(header_bar().theme(&theme), width, panel);
+        let header = if run {
+            header.run(Some(halo_run(RunState::Running, 0)), ())
+        } else {
+            header
+        };
+        assert_eq!(header.controls(), expected, "{width}px, panel {panel}");
+        // Each button is one drawn glyph; the app's passive mark is the other.
+        let (mut renderer, _viewport, _cache) =
+            render(&theme, width, 1.0, |h| build(h, width, panel));
+        assert_eq!(
+            control_icons(&mut renderer).len() - 1,
+            build(header_bar().theme(&theme), width, panel)
+                .controls()
+                .len(),
+            "{width}px, panel {panel}"
+        );
+    }
 }
 
 /// The glyph is passive: a click on it sends nothing.

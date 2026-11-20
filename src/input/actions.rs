@@ -1263,7 +1263,7 @@ impl State {
 
             Action::FocusHalo => {
                 let shell = self.common.shell.read();
-                if !crate::shell::element::header_bar::uses_halo_header(shell.theme()) {
+                if !crate::shell::element::header_bar::header_takes_keyboard(shell.theme()) {
                     return;
                 }
                 let window = match seat.get_keyboard().unwrap().current_focus() {

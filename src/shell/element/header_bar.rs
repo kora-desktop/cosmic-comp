@@ -178,6 +178,11 @@ pub fn uses_integrated_header(theme: &CompTheme) -> bool {
     theme.window_header_style() == WindowHeaderStyle::Integrated
 }
 
+/// Whether Super+F10 can walk the header's controls: the Halo and the integrated header ring them.
+pub fn header_takes_keyboard(theme: &CompTheme) -> bool {
+    uses_halo_header(theme) || uses_integrated_header(theme)
+}
+
 /// Whether the shell owns the window's commands: the palette, Super+K and the app's request.
 pub fn uses_shell_palette(theme: &CompTheme) -> bool {
     theme.window_header_style().shell_owned()
@@ -549,42 +554,65 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         self
     }
 
-    /// The controls this Halo shows at its tier, in Tab order.
+    /// The controls this header shows at its width, in Tab order.
     pub fn controls(&self) -> Vec<HaloControl> {
-        let tier = self.tier();
-        let mut controls = Vec::new();
-        if self.on_commands.is_some() {
-            controls.push(HaloControl::Glyph);
-        }
-        if self.run.is_some() && tier < 4 {
-            controls.push(HaloControl::Chip);
-        }
-        for (idx, entry) in self.tray.iter().enumerate() {
-            if tier == 1 || entry.on {
-                controls.push(HaloControl::Tray(idx));
-            }
-        }
-        if tier <= 2 {
-            controls.extend((0..self.quick_settings.len()).map(HaloControl::QuickSetting));
-            if self.on_new_window.is_some() {
-                controls.push(HaloControl::NewWindow);
-            }
-            for (control, present) in [
-                (HaloControl::Minimize, self.on_minimize.is_some()),
-                (HaloControl::Maximize, self.on_maximize.is_some()),
-                (HaloControl::Fullscreen, self.on_fullscreen.is_some()),
-            ] {
-                if present {
-                    controls.push(control);
+        use HaloControl::*;
+        [Glyph, Chip]
+            .into_iter()
+            .chain((0..self.tray.len()).map(Tray))
+            .chain((0..self.quick_settings.len()).map(QuickSetting))
+            .chain([NewWindow, Minimize, Maximize, Fullscreen, More, Close])
+            .filter(|control| self.shows(*control))
+            .collect()
+    }
+
+    /// Whether the header draws `control` as something to press; drawing and the Tab order both ask.
+    fn shows(&self, control: HaloControl) -> bool {
+        use HaloControl::*;
+        let width = self.window_width.unwrap_or(f32::INFINITY);
+        if self.theme.is_some_and(uses_integrated_header) {
+            let tier = integrated_tier(width, self.panel);
+            let wide = tier <= 2;
+            return match control {
+                // The glyph is passive; at the narrowest tier it carries the run's action.
+                Glyph => false,
+                Chip => self.run.is_some(),
+                Tray(idx) => self
+                    .tray
+                    .get(idx)
+                    .is_some_and(|entry| wide || entry.fixed || entry.on),
+                QuickSetting(idx) => self
+                    .quick_settings
+                    .get(idx)
+                    .is_some_and(|entry| wide || entry.on),
+                NewWindow => wide && self.on_new_window.is_some(),
+                Minimize => tier <= 3 && self.on_minimize.is_some(),
+                Maximize => tier <= 3 && self.on_maximize.is_some(),
+                Fullscreen => wide && self.on_fullscreen.is_some(),
+                More => {
+                    tier == 4
+                        && self.on_commands.is_some()
+                        && (self.on_minimize.is_some() || self.on_maximize.is_some())
                 }
-            }
-        } else if self.on_commands.is_some() {
-            controls.push(HaloControl::More);
+                Close => self.on_close.is_some(),
+            };
         }
-        if self.on_close.is_some() {
-            controls.push(HaloControl::Close);
+        let tier = halo_tier(width, self.panel);
+        match control {
+            Glyph => self.on_commands.is_some(),
+            Chip => tier < 4 && self.run.is_some(),
+            Tray(idx) => self
+                .tray
+                .get(idx)
+                .is_some_and(|entry| tier == 1 || entry.on),
+            QuickSetting(idx) => tier <= 2 && idx < self.quick_settings.len(),
+            NewWindow => tier <= 2 && self.on_new_window.is_some(),
+            Minimize => tier <= 2 && self.on_minimize.is_some(),
+            Maximize => tier <= 2 && self.on_maximize.is_some(),
+            Fullscreen => tier <= 2 && self.on_fullscreen.is_some(),
+            More => tier >= 3 && self.on_commands.is_some(),
+            Close => self.on_close.is_some(),
         }
-        controls
     }
 
     pub fn control_message(&self, control: HaloControl) -> Option<Message> {
@@ -727,7 +755,6 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     ) -> Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
         let metrics = header_control_metrics(&**theme);
         let tier = integrated_tier(self.window_width.unwrap_or(f32::INFINITY), self.panel);
-        let wide = tier <= 2;
         let focus = self
             .keyboard_focus
             .map(|control| (control, !self.menu_open));
@@ -747,13 +774,18 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         );
         // At the narrowest tier a live run takes the glyph as its status action.
         let glyph = match self.run.as_ref().filter(|_| tier == 4) {
-            Some((run, message)) => halo_glyph(
-                mark,
-                Some(message.clone()),
-                false,
-                self.menu_open,
-                run.verb.clone(),
-                Some(run.state),
+            Some((run, message)) => ringed(
+                focus,
+                HaloControl::Chip,
+                halo_glyph(
+                    mark,
+                    Some(message.clone()),
+                    false,
+                    self.menu_open,
+                    run.verb.clone(),
+                    Some(run.state),
+                    theme,
+                ),
                 theme,
             ),
             None => halo_glyph(
@@ -811,7 +843,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .align_y(Alignment::Center);
         let mut any_optional = false;
         for (idx, entry) in self.tray.iter().enumerate() {
-            if wide || entry.fixed || entry.on {
+            if self.shows(HaloControl::Tray(idx)) {
                 let button = halo_button(
                     entry.icon,
                     Some(entry.message.clone()),
@@ -825,7 +857,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
         }
         for (idx, entry) in self.quick_settings.iter().enumerate() {
-            if wide || entry.on {
+            if self.shows(HaloControl::QuickSetting(idx)) {
                 let state = if entry.on {
                     fl!("halo-quick-setting-on", name = entry.label.as_str())
                 } else {
@@ -844,7 +876,11 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 any_optional = true;
             }
         }
-        if let Some(message) = self.on_new_window.clone().filter(|_| wide) {
+        if let Some(message) = self
+            .on_new_window
+            .clone()
+            .filter(|_| self.shows(HaloControl::NewWindow))
+        {
             let button = halo_button(
                 icons::PLUS,
                 Some(message),
@@ -860,20 +896,18 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         let mut actions = row![]
             .spacing(theme.spacing_0_5())
             .align_y(Alignment::Center);
-        for (control, icon, message, label, shown) in [
+        for (control, icon, message, label) in [
             (
                 HaloControl::Minimize,
                 icons::MINUS,
                 self.on_minimize.clone(),
                 fl!("halo-minimize"),
-                tier <= 3,
             ),
             (
                 HaloControl::Maximize,
                 icons::MAXIMIZE_2,
                 self.on_maximize.clone(),
                 fl!("halo-fill"),
-                tier <= 3,
             ),
             (
                 HaloControl::Fullscreen,
@@ -884,24 +918,21 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 },
                 self.on_fullscreen.clone(),
                 fullscreen_label(self.fullscreen),
-                wide,
             ),
             (
                 HaloControl::More,
                 icons::MORE_HORIZONTAL,
                 self.on_commands.clone(),
                 fl!("halo-all-commands"),
-                tier == 4 && (self.on_minimize.is_some() || self.on_maximize.is_some()),
             ),
             (
                 HaloControl::Close,
                 icons::X,
                 self.on_close.clone(),
                 fl!("halo-close"),
-                true,
             ),
         ] {
-            if let Some(message) = message.filter(|_| shown) {
+            if let Some(message) = message.filter(|_| self.shows(control)) {
                 let role = if control == HaloControl::Close {
                     HaloButtonRole::Close
                 } else {
@@ -1073,7 +1104,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .tray
             .iter()
             .enumerate()
-            .filter(|(_, entry)| tier == 1 || entry.on)
+            .filter(|(idx, _)| self.shows(HaloControl::Tray(*idx)))
             .collect();
         if !pins.is_empty() {
             let pinned = row(pins.into_iter().map(|(idx, entry)| {
@@ -1093,8 +1124,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             }
             trailing = trailing.push(pinned);
         }
-        if tier <= 2 {
-            for (idx, entry) in self.quick_settings.iter().enumerate() {
+        for (idx, entry) in self.quick_settings.iter().enumerate() {
+            if self.shows(HaloControl::QuickSetting(idx)) {
                 let state = if entry.on {
                     fl!("halo-quick-setting-on", name = entry.label.as_str())
                 } else {
@@ -1111,69 +1142,65 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 trailing =
                     trailing.push(ringed(focus, HaloControl::QuickSetting(idx), button, theme));
             }
-            if let Some(message) = self.on_new_window.clone() {
-                let button = halo_button(
-                    icons::PLUS,
-                    Some(message),
-                    fl!("halo-new-window", app = name.as_str()),
-                    HaloButtonRole::Window,
-                    self.menu_open,
-                    theme,
-                );
-                trailing = trailing.push(ringed(focus, HaloControl::NewWindow, button, theme));
-            }
+        }
+        if let Some(message) = self
+            .on_new_window
+            .clone()
+            .filter(|_| self.shows(HaloControl::NewWindow))
+        {
+            let button = halo_button(
+                icons::PLUS,
+                Some(message),
+                fl!("halo-new-window", app = name.as_str()),
+                HaloButtonRole::Window,
+                self.menu_open,
+                theme,
+            );
+            trailing = trailing.push(ringed(focus, HaloControl::NewWindow, button, theme));
         }
         header = header.trailing(trailing);
 
         let mut actions = row![].spacing(metrics.gap).align_y(Alignment::Center);
-        if tier >= 3 {
-            if let Some(message) = self.on_commands.clone() {
+        for (control, icon, message, label) in [
+            (
+                HaloControl::Minimize,
+                icons::MINUS,
+                self.on_minimize.clone(),
+                fl!("halo-minimize"),
+            ),
+            (
+                HaloControl::Maximize,
+                icons::MAXIMIZE_2,
+                self.on_maximize.clone(),
+                fl!("halo-fill"),
+            ),
+            (
+                HaloControl::Fullscreen,
+                if self.fullscreen {
+                    icons::SHRINK
+                } else {
+                    icons::FULLSCREEN
+                },
+                self.on_fullscreen.clone(),
+                fullscreen_label(self.fullscreen),
+            ),
+            (
+                HaloControl::More,
+                icons::MORE_HORIZONTAL,
+                self.on_commands.clone(),
+                fl!("halo-all-commands"),
+            ),
+        ] {
+            if let Some(message) = message.filter(|_| self.shows(control)) {
                 let button = halo_button(
-                    icons::MORE_HORIZONTAL,
+                    icon,
                     Some(message),
-                    fl!("halo-all-commands"),
+                    label,
                     HaloButtonRole::Window,
                     self.menu_open,
                     theme,
                 );
-                actions = actions.push(ringed(focus, HaloControl::More, button, theme));
-            }
-        } else {
-            for (control, icon, message, label) in [
-                (
-                    HaloControl::Minimize,
-                    icons::MINUS,
-                    self.on_minimize.clone(),
-                    fl!("halo-minimize"),
-                ),
-                (
-                    HaloControl::Maximize,
-                    icons::MAXIMIZE_2,
-                    self.on_maximize.clone(),
-                    fl!("halo-fill"),
-                ),
-                (
-                    HaloControl::Fullscreen,
-                    if self.fullscreen {
-                        icons::SHRINK
-                    } else {
-                        icons::FULLSCREEN
-                    },
-                    self.on_fullscreen.clone(),
-                    fullscreen_label(self.fullscreen),
-                ),
-            ] {
-                if let Some(message) = message {
-                    let button = halo_button(
-                        icon,
-                        Some(message),
-                        label,
-                        HaloButtonRole::Window,
-                        self.menu_open,
-                        theme,
-                    );
-                    actions = actions.push(ringed(focus, control, button, theme));
-                }
+                actions = actions.push(ringed(focus, control, button, theme));
             }
         }
         if let Some(message) = self.on_close.clone() {
@@ -1209,10 +1236,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
 
     fn halo_trailing_width(&self, theme: &CompTheme, tier: u8) -> f32 {
         let metrics = theme.halo_style();
-        let pins = self
-            .tray
-            .iter()
-            .filter(|entry| tier == 1 || entry.on)
+        let pins = (0..self.tray.len())
+            .filter(|idx| self.shows(HaloControl::Tray(*idx)))
             .count() as f32;
         let mut items = 0_u32;
         let mut width = 0.0_f32;
@@ -1224,24 +1249,15 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 items += 1;
             }
         }
-        let mut controls = |present: bool| {
-            if present {
+        for control in self.controls() {
+            if !matches!(
+                control,
+                HaloControl::Glyph | HaloControl::Chip | HaloControl::Tray(_)
+            ) {
                 width += metrics.control_size;
                 items += 1;
             }
-        };
-        if tier <= 2 {
-            for _ in &self.quick_settings {
-                controls(true);
-            }
-            controls(self.on_new_window.is_some());
-            controls(self.on_minimize.is_some());
-            controls(self.on_maximize.is_some());
-            controls(self.on_fullscreen.is_some());
-        } else {
-            controls(self.on_commands.is_some());
         }
-        controls(self.on_close.is_some());
         if tier < 4 {
             width += metrics.border_width;
             items += 1;
