@@ -1126,6 +1126,9 @@ pub struct LayerVisibilityContext {
     /// and the machine plane's wallpaper where this realm paints its own.
     /// Never drawn, whatever their client does, and never captured.
     pub off_realm_surfaces: std::collections::HashSet<ObjectId>,
+    /// Layer surfaces another shell surface stands over: under the desktop overview, or
+    /// under a capture preview. Kept out of every picture but a desktop's own preview.
+    pub covered_surfaces: std::collections::HashSet<ObjectId>,
     /// Set of surface IDs that currently have active slide animations
     pub sliding_surfaces: std::collections::HashSet<ObjectId>,
     /// Layer surfaces currently fading in (surface ObjectId -> current alpha 0.0-1.0)
@@ -1148,6 +1151,7 @@ impl LayerVisibilityContext {
         Self {
             hidden_surfaces: shell.hidden_surfaces().clone(),
             off_realm_surfaces,
+            covered_surfaces: crate::shell::layer_cover::covered_on(output),
             sliding_surfaces: shell
                 .layer_slides
                 .iter()

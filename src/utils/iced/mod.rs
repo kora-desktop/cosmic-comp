@@ -1220,7 +1220,14 @@ impl<P: Program + Send + 'static> IcedElementInternal<P> {
         // Operations a host queued act on the fresh tree, ahead of the events
         // that assume they already have.
         for mut operation in self.pending_operations.drain(..) {
-            interface.operate(&self.renderer, operation.as_mut());
+            // An operation may find what it needs first and then act on it.
+            loop {
+                interface.operate(&self.renderer, operation.as_mut());
+                match operation.finish() {
+                    iced_core::widget::operation::Outcome::Chain(next) => operation = next,
+                    _ => break,
+                }
+            }
         }
 
         // Phase 3: ui_update — process queued events, collecting messages
@@ -1445,15 +1452,16 @@ impl<P: Program + Send + 'static> PointerTarget<crate::state::State> for IcedEle
         internal
             .event_queue
             .push(Event::Mouse(MouseEvent::WheelScrolled {
+                // Wayland counts a scroll down as positive, iced as negative.
                 delta: if let Some(discrete) = frame.v120 {
                     ScrollDelta::Lines {
-                        x: discrete.0 as f32 / 120.,
-                        y: discrete.1 as f32 / 120.,
+                        x: -discrete.0 as f32 / 120.,
+                        y: -discrete.1 as f32 / 120.,
                     }
                 } else {
                     ScrollDelta::Pixels {
-                        x: frame.axis.0 as f32,
-                        y: frame.axis.1 as f32,
+                        x: -frame.axis.0 as f32,
+                        y: -frame.axis.1 as f32,
                     }
                 },
             }));
