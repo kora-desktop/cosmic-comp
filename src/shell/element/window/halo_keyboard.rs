@@ -67,7 +67,10 @@ impl CosmicWindow {
     }
 
     fn halo_controls(&self) -> Vec<HaloControl> {
-        self.0.with_program(|p| p.halo_header().controls())
+        self.0.with_program(|p| {
+            let theme = p.theme.lock().unwrap();
+            p.halo_header().theme(&theme).controls()
+        })
     }
 
     fn set_halo_keyboard(&self, control: Option<HaloControl>) {
@@ -83,7 +86,9 @@ impl CosmicWindow {
         seat: &Seat<State>,
         at: Option<HaloControl>,
     ) {
-        if !self.0.with_program(|p| p.uses_halo_header()) {
+        if !self.0.with_program(|p| {
+            super::super::header_bar::header_takes_keyboard(&p.theme.lock().unwrap())
+        }) {
             return;
         }
         let controls = self.halo_controls();
@@ -104,8 +109,13 @@ impl CosmicWindow {
         }
     }
 
-    /// The palette from the glyph; Escape there brings focus back to the glyph.
-    fn open_commands_from_keyboard(&self, state: &mut State, seat: &Seat<State>) {
+    /// The palette from the glyph or ⋯; Escape there brings focus back to `from`.
+    fn open_commands_from_keyboard(
+        &self,
+        state: &mut State,
+        seat: &Seat<State>,
+        from: HaloControl,
+    ) {
         let surface = self.surface();
         let app = self
             .0
@@ -120,7 +130,7 @@ impl CosmicWindow {
             let position = start.current_location(&seat).to_i32_round().as_global();
             let back = seat.clone();
             let hook: crate::shell::grabs::EscapeHook = Box::new(move |state: &mut State| {
-                window.enter_halo_keyboard(state, &back, Some(HaloControl::Glyph));
+                window.enter_halo_keyboard(state, &back, Some(from));
             });
             halo::open_commands(
                 state,
@@ -165,7 +175,8 @@ impl HaloKeyboardGrab {
         };
         match control {
             HaloControl::Glyph | HaloControl::More => {
-                self.window.open_commands_from_keyboard(data, &self.seat);
+                self.window
+                    .open_commands_from_keyboard(data, &self.seat, control);
                 false
             }
             // A toggle keeps focus, as the design's quick-setting button does.
