@@ -2552,6 +2552,11 @@ fn the_window_title_drops_the_app_name_the_header_already_shows() {
             ("Remember", "Remember", None),
             ("Remember", "Remember —", None),
             ("Files", "Files settings", Some("Files settings")),
+            (
+                "Firefox",
+                "Welcome to Firefox - Mozilla Firefox",
+                Some("Welcome to Firefox"),
+            ),
         ] {
             let (mut renderer, _, _cache) = header(&theme, app, title, 1.0);
             let (name, selection) = identity(&mut renderer, &theme);

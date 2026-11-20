@@ -1141,7 +1141,7 @@ impl State {
             }
 
             Action::WindowCommands => {
-                if !crate::shell::element::header_bar::uses_halo_header(
+                if !crate::shell::element::header_bar::uses_shell_palette(
                     self.common.shell.read().theme(),
                 ) {
                     let up = Action::Focus(FocusDirection::Up);
@@ -1228,7 +1228,7 @@ impl State {
 
             Action::MoveToDesktop => {
                 let shell = self.common.shell.read();
-                if !crate::shell::element::header_bar::uses_halo_header(shell.theme()) {
+                if !crate::shell::element::header_bar::uses_shell_palette(shell.theme()) {
                     return;
                 }
                 // Opened from the keyboard, so its focus ring shows, as :focus-visible would.
