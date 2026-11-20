@@ -27,7 +27,10 @@ use icetron_p::components::{
 };
 use icetron_p::icetron_themes::Icon;
 use icetron_p::prelude::styled_text;
-use icetron_p::prelude::{DropdownItem, DropdownSection, dropdown, halo_ask_footer, matching};
+use icetron_p::prelude::{
+    DropdownItem, DropdownSection, HaloCommand, HaloCommandGroup, dropdown, halo_ask_footer,
+    matching, reveal_active_row, step_focus,
+};
 use smithay::{
     backend::{
         input::{ButtonState, KeyState, Keycode, TouchSlot},
@@ -356,6 +359,12 @@ pub struct Palette {
     pub commands: Vec<icetron_p::prelude::HaloCommand>,
     /// What has been typed into the search field.
     query: Mutex<String>,
+    /// The highlighted row, as an index into the rows the query leaves.
+    active: Mutex<usize>,
+    /// The tallest the card may be: the room the output leaves it.
+    max_height: Option<f32>,
+    /// The row list's height once the card had to be capped to fit.
+    rows_cap: Mutex<Option<f32>>,
 }
 
 impl fmt::Debug for Palette {
@@ -373,13 +382,74 @@ impl Palette {
         scope: impl Into<String>,
         commands: Vec<icetron_p::prelude::HaloCommand>,
     ) -> Self {
+        let top = drawn_order(&commands.iter().collect::<Vec<_>>())
+            .first()
+            .copied()
+            .unwrap_or(0);
         Self {
             app_id: app_id.into(),
             scope: scope.into(),
             commands,
             query: Mutex::new(String::new()),
+            active: Mutex::new(top),
+            max_height: None,
+            rows_cap: Mutex::new(None),
         }
     }
+
+    /// Keep the card within `height`: past it, the rows scroll.
+    pub fn max_height(mut self, height: f32) -> Self {
+        self.max_height = Some(height);
+        self
+    }
+
+    /// The highlighted row's index in `commands`, when the query leaves one.
+    fn active_command(&self) -> Option<usize> {
+        let query = self.query.lock().unwrap().clone();
+        let active = *self.active.lock().unwrap();
+        let hit = matching(&self.commands, &query).get(active)?.id.clone();
+        self.commands.iter().position(|c| c.id == hit)
+    }
+
+    /// Set the query, and highlight the top row it leaves.
+    fn set_query(&self, query: String) {
+        let drawn = drawn_order(&matching(&self.commands, &query));
+        *self.active.lock().unwrap() = drawn.first().copied().unwrap_or(0);
+        *self.query.lock().unwrap() = query;
+    }
+
+    /// Whether the highlight is on the top row.
+    fn at_top(&self) -> bool {
+        let query = self.query.lock().unwrap().clone();
+        let drawn = drawn_order(&matching(&self.commands, &query));
+        drawn.first() == Some(&*self.active.lock().unwrap())
+    }
+
+    /// Move the highlight by `delta` rows in the order they are drawn, which
+    /// groups them, rather than in the order they were given.
+    fn step(&self, delta: isize) {
+        let query = self.query.lock().unwrap().clone();
+        let drawn = drawn_order(&matching(&self.commands, &query));
+        let active = &mut *self.active.lock().unwrap();
+        let from = drawn.iter().position(|at| at == active).unwrap_or(0);
+        if let Some(&to) = drawn.get(step_focus(from, delta, drawn.len())) {
+            *active = to;
+        }
+    }
+}
+
+/// Indices into `matches` in the order the palette draws them: group by group.
+fn drawn_order(matches: &[&HaloCommand]) -> Vec<usize> {
+    HaloCommandGroup::ALL
+        .iter()
+        .flat_map(|group| {
+            matches
+                .iter()
+                .enumerate()
+                .filter(move |(_, command)| command.group == *group)
+                .map(|(at, _)| at)
+        })
+        .collect()
 }
 
 /// Menu that comes up when right-clicking an application header bar
@@ -497,9 +567,13 @@ pub enum Message {
     TogglePin(String),
     /// The search field changed.
     Query(String),
-    /// Enter in the search field: run the first row the query leaves, or hand
-    /// the query to chat when it leaves none.
+    /// Enter in the search field: run the highlighted row, or hand the query
+    /// to chat when it leaves none.
     Submit,
+    /// Up or Down: move the highlight by that many rows.
+    Step(isize),
+    /// The pointer reached a palette row: highlight it.
+    Hover(usize),
     /// The Ask row: open chat with the query.
     AskChat,
     /// The pointer reached a Halo menu row: open its fly-out, or close another's.
@@ -584,17 +658,25 @@ impl Program for ContextMenu {
             }
             Message::Query(query) => {
                 if let Some(palette) = self.palette.as_ref() {
-                    *palette.query.lock().unwrap() = query;
+                    palette.set_query(query);
                 }
             }
             Message::Submit => {
                 if let Some(palette) = self.palette.as_ref() {
-                    let query = palette.query.lock().unwrap().clone();
-                    let first = matching(&palette.commands, &query)
-                        .first()
-                        .and_then(|hit| palette.commands.iter().position(|c| c.id == hit.id));
-                    let next = first.map_or(Message::AskChat, Message::ItemPressed);
+                    let next = palette
+                        .active_command()
+                        .map_or(Message::AskChat, Message::ItemPressed);
                     return self.update(next, loop_handle, last_seat);
+                }
+            }
+            Message::Step(delta) => {
+                if let Some(palette) = self.palette.as_ref() {
+                    palette.step(delta);
+                }
+            }
+            Message::Hover(at) => {
+                if let Some(palette) = self.palette.as_ref() {
+                    *palette.active.lock().unwrap() = at;
                 }
             }
             Message::Dismiss => self.selected.store(true, Ordering::SeqCst),
@@ -805,12 +887,13 @@ impl Program for ContextMenu {
                     )
                 })
                 .on_pin(Message::TogglePin)
+                .active(*palette.active.lock().unwrap())
+                .on_hover(Message::Hover)
                 // The compositor blurs the surface behind this one already.
                 .backdrop(false)
-                // A menu grab does not route a scroll to its surface, so the
-                // card grows to its rows instead of hiding some below a
-                // cut-off nothing can move.
-                .rows_height(None);
+                // The card grows to its rows until it meets the output's
+                // usable area; past that the rows scroll.
+                .rows_height(*palette.rows_cap.lock().unwrap());
             card = card.footer(halo_ask_footer(
                 crate::fl!("halo-ask-chat"),
                 crate::fl!("halo-ask-chat-hint"),
@@ -1369,7 +1452,18 @@ impl PointerGrab<State> for MenuGrab {
         handle: &mut PointerInnerHandle<'_, State>,
         details: AxisFrame,
     ) {
-        handle.axis(state, details);
+        // A scroll over the menu scrolls the menu, not the window under it.
+        let menu = self
+            .elements
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|element| element.pointer_entered)
+            .map(|element| element.iced.clone());
+        match menu {
+            Some(menu) => PointerTarget::axis(&menu, &self.seat, state, details),
+            None => handle.axis(state, details),
+        }
     }
 
     fn frame(&mut self, data: &mut State, handle: &mut PointerInnerHandle<'_, State>) {
@@ -1869,7 +1963,18 @@ impl MenuGrab {
         element.with_program(|p| {
             *p.row_width.lock().unwrap() = Some(natural_size.w as f32);
         });
-        let min_size = element.minimum_size();
+        let mut min_size = element.minimum_size();
+        if is_palette {
+            let chrome = (padding.top + padding.bottom) as i32;
+            if let Some(cap) = palette_rows_cap(&element, min_size.h - chrome) {
+                element.with_program(|p| {
+                    if let Some(palette) = p.palette.as_ref() {
+                        *palette.rows_cap.lock().unwrap() = Some(cap);
+                    }
+                });
+                min_size = element.minimum_size();
+            }
+        }
         element.resize(min_size);
 
         let output = seat.active_output();
@@ -2003,6 +2108,29 @@ impl Drop for MenuGrab {
     }
 }
 
+/// The row list's height that keeps a palette card of natural height `card`
+/// within its room, or `None` when it fits as it is.
+fn palette_rows_cap(element: &IcedElement<ContextMenu>, card: i32) -> Option<f32> {
+    let room = element.with_program(|p| p.palette.as_ref()?.max_height)?;
+    if card as f32 <= room {
+        return None;
+    }
+    // Everything but the rows: the search field, the footer, the card's edges.
+    let set = |cap: Option<f32>| {
+        element.with_program(|p| {
+            if let Some(palette) = p.palette.as_ref() {
+                *palette.rows_cap.lock().unwrap() = cap;
+            }
+        })
+    };
+    set(Some(0.0));
+    let empty = element.minimum_size().h;
+    set(None);
+    let natural = element.minimum_size().h;
+    let rows = (natural - empty) as f32;
+    Some((rows - (card as f32 - room)).max(0.0))
+}
+
 /// The palette's search field, named so the grab can focus it on open.
 fn search_field_id() -> iced_core::widget::Id {
     iced_core::widget::Id::new("halo-palette-search")
@@ -2126,6 +2254,34 @@ impl PaletteKeyboardGrab {
         true
     }
 
+    /// Move the palette's highlight, and scroll its rows to keep it in view.
+    fn step(&self, delta: isize) {
+        let Some(grab_state) = self.seat.user_data().get::<SeatMenuGrabState>() else {
+            return;
+        };
+        let guard = grab_state.lock().unwrap();
+        let Some(element) = guard.as_ref().and_then(|menu| {
+            menu.elements
+                .lock()
+                .unwrap()
+                .first()
+                .map(|e| e.iced.clone())
+        }) else {
+            return;
+        };
+        drop(guard);
+        if element.with_program(|menu| menu.palette.is_none()) {
+            return;
+        }
+        element.queue_message(Message::Step(delta));
+        // Back on the top row, show the heading above it too.
+        if element.with_program(|menu| menu.palette.as_ref().is_some_and(Palette::at_top)) {
+            element.queue_operation(ScrollToTop);
+        } else {
+            element.queue_operation(reveal_active_row());
+        }
+    }
+
     fn dialog_done(&self) -> bool {
         self.dialog().is_some_and(|element| {
             element.with_program(|menu| menu.selected.load(Ordering::SeqCst))
@@ -2180,6 +2336,13 @@ impl KeyboardGrab<State> for PaletteKeyboardGrab {
         {
             if self.dialog_done() {
                 self.close(data, handle, serial, time);
+            }
+            return;
+        }
+        // The search field has no use for these: they move the highlight.
+        if let Some(delta) = palette_step(sym) {
+            if state == KeyState::Pressed {
+                self.step(delta);
             }
             return;
         }
@@ -2249,6 +2412,37 @@ fn dialog_key(sym: Keysym) -> Option<Message> {
         Keysym::Tab | Keysym::Down => Some(Message::DialogStep(true)),
         Keysym::ISO_Left_Tab | Keysym::Up => Some(Message::DialogStep(false)),
         Keysym::Return | Keysym::KP_Enter | Keysym::space => Some(Message::DialogActivate),
+        _ => None,
+    }
+}
+
+/// Scroll every scrollable it meets back to its top.
+struct ScrollToTop;
+
+impl iced_core::widget::Operation<()> for ScrollToTop {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced_core::widget::Operation<()>)) {
+        operate(self);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&iced_core::widget::Id>,
+        _bounds: IcedRectangle<f32>,
+        _content_bounds: IcedRectangle<f32>,
+        _translation: iced_core::Vector,
+        state: &mut dyn iced_core::widget::operation::Scrollable,
+    ) {
+        state.scroll_to(iced_core::widget::operation::scrollable::AbsoluteOffset {
+            x: None,
+            y: Some(0.0),
+        });
+    }
+}
+
+fn palette_step(sym: Keysym) -> Option<isize> {
+    match sym {
+        Keysym::Down | Keysym::KP_Down | Keysym::Tab => Some(1),
+        Keysym::Up | Keysym::KP_Up | Keysym::ISO_Left_Tab => Some(-1),
         _ => None,
     }
 }
