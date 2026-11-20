@@ -615,13 +615,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             .as_deref()
             .filter(|name| !name.is_empty())
             .or_else(|| self.app_identity.map(AppIdentityId::label));
-        match name {
-            Some(name) => (
-                name,
-                Some(self.title.as_str()).filter(|title| !title.is_empty() && *title != name),
-            ),
-            None => (self.title.as_str(), None),
-        }
+        icetron_p::utils::window_label::window_label(name.unwrap_or_default(), &self.title)
     }
 
     /// Convert to an iced Element using icetron's app_header.
@@ -726,7 +720,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
     }
 
     /// Design #308: one opaque row inside the frame with a passive glyph, the
-    /// app's name and the controls its tier keeps. No tier has a ⋯ button.
+    /// app's name and the controls its tier keeps. The narrowest folds Park and Fill behind ⋯.
     fn into_integrated_element(
         self,
         theme: &'a CompTheme,
@@ -774,8 +768,8 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
         };
         let mut name_style = theme.text_styles().role(TextRole::Body);
         name_style.font_weight = metrics.title_font_weight;
-        // The name keeps its width; the window title and the run's words give
-        // way to it, the words first and all the way out.
+        // The name keeps its width. The window title is cut first, then the
+        // run's words; the words leave before the title, and the run keeps its dot.
         let mut identity = crate::utils::iced::ElasticRow::new()
             .spacing(theme.spacing_2())
             .floor(name_style.font_size * 6.0)
@@ -785,7 +779,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                     .wrapping(iced_widget::text::Wrapping::None)
                     .ellipsis(iced_widget::text::Ellipsis::End),
             );
-        if let Some(selection) = selection.as_deref().filter(|_| tier <= 2) {
+        if let Some(selection) = selection.as_deref() {
             identity = identity.push_elastic_droppable(
                 1,
                 styled_text(
@@ -798,13 +792,7 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
             );
         }
         if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
-            let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
-            let chip = ringed(focus, HaloControl::Chip, chip, theme);
-            identity = if tier >= 3 {
-                identity.push_rigid(chip)
-            } else {
-                identity.push_elastic_droppable(0, chip)
-            };
+            identity = push_run_chip(identity, run, message, focus, self.menu_open, theme);
         }
         let identity_tip = match selection.as_deref() {
             Some(selection) => format!("{name} — {selection}"),
@@ -897,6 +885,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 self.on_fullscreen.clone(),
                 fullscreen_label(self.fullscreen),
                 wide,
+            ),
+            (
+                HaloControl::More,
+                icons::MORE_HORIZONTAL,
+                self.on_commands.clone(),
+                fl!("halo-all-commands"),
+                tier == 4 && (self.on_minimize.is_some() || self.on_maximize.is_some()),
             ),
             (
                 HaloControl::Close,
@@ -1051,14 +1046,13 @@ impl<'a, Message: Clone + 'static> HeaderBar<'a, Message> {
                 .on_baseline();
         }
         if let Some((run, message)) = self.run.as_ref().filter(|_| tier < 4) {
-            let chip = halo_chip(run, message.clone(), tier >= 3, self.menu_open, theme);
-            let chip = ringed(focus, HaloControl::Chip, chip, theme);
-            // The words are the first thing to give way, and the status leaves
-            // before the name or the controls are squeezed.
+            // The words give way after the title, and leave before the name or
+            // the controls are squeezed.
             identity = if tier >= 3 {
-                identity.push_rigid(chip)
+                let chip = halo_chip(run, message.clone(), true, self.menu_open, theme);
+                identity.push_rigid(ringed(focus, HaloControl::Chip, chip, theme))
             } else {
-                identity.push_elastic_droppable(0, chip)
+                push_run_chip(identity, run, message, focus, self.menu_open, theme)
             };
         }
         let identity: Element<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> =
@@ -1397,6 +1391,31 @@ fn halo_glyph<'a, Message: Clone + 'static>(
 
 /// The run chip of the prototype's `HaloBar.tsx`: a pulsing dot and the
 /// run's words; a bare dot at tier 3, where the verbs fold behind ⋯.
+/// The run chip, cut after the window title; with no room for its words it
+/// leaves its dot behind.
+fn push_run_chip<'a, Message: Clone + 'static>(
+    identity: crate::utils::iced::ElasticRow<
+        'a,
+        Message,
+        iced_core::Theme,
+        iced_tiny_skia::Renderer,
+    >,
+    run: &HaloRun,
+    message: &Message,
+    focus: Option<(HaloControl, bool)>,
+    menu_open: bool,
+    theme: &'a CompTheme,
+) -> crate::utils::iced::ElasticRow<'a, Message, iced_core::Theme, iced_tiny_skia::Renderer> {
+    let chip = |bare| {
+        let chip = halo_chip(run, message.clone(), bare, menu_open, theme);
+        ringed(focus, HaloControl::Chip, chip, theme)
+    };
+    identity
+        .push_elastic_droppable(0, chip(false))
+        .gives_way_in_order(1)
+        .push_stand_in(chip(true))
+}
+
 fn halo_chip<'a, Message: Clone + 'static>(
     run: &HaloRun,
     on_press: Message,
