@@ -582,6 +582,7 @@ pub struct Shell {
     pub pending_windows: Vec<PendingWindow>,
     pub pending_layers: Vec<PendingLayer>,
     pub pending_activations: HashMap<ActivationKey, ActivationContext>,
+    pub realm_activation: RealmActivation<WlSurface>,
     pub override_redirect_windows: Vec<X11Surface>,
     pub session_lock: Option<SessionLock>,
     pub seats: Seats,
@@ -1919,6 +1920,35 @@ pub struct FullscreenDesktop {
     pub desktop: WorkspaceHandle,
     /// Where the window goes back to, and where its desktop's other windows go.
     pub home: WorkspaceHandle,
+}
+
+/// A window that asked to come forward while its workspace was off screen.
+///
+/// The switch to that workspace can land after the request, and the carried
+/// machine-plane windows would then keep focus and stay drawn over it.
+#[derive(Debug)]
+pub struct RealmActivation<S> {
+    asked: Option<(S, String)>,
+}
+
+impl<S> Default for RealmActivation<S> {
+    fn default() -> Self {
+        Self { asked: None }
+    }
+}
+
+impl<S> RealmActivation<S> {
+    pub fn ask(&mut self, surface: S, realm: String) {
+        self.asked = Some((surface, realm));
+    }
+
+    /// `active` came on screen: its window comes forward, and a switch anywhere else forgets it.
+    pub fn switched(&mut self, active: &str) -> Option<S> {
+        match self.asked.take() {
+            Some((surface, realm)) if realm == active => Some(surface),
+            _ => None,
+        }
+    }
 }
 
 /// Whether desktops come and go on their own. `COSMIC_STATIC_WORKSPACES=1` in
@@ -3364,7 +3394,7 @@ impl Shell {
         }
     }
 
-    /// Put a realm on screen.
+    /// Put a realm on screen, and return the window that asked to come forward there.
     /// `None` adopts the login realm without presenting it as a user switch.
     ///
     /// Only the active realm's workspace groups carry outputs, so pagers and
@@ -3378,9 +3408,9 @@ impl Shell {
         animation: Option<WorkspaceTransition>,
         workspace_state: &mut WorkspaceUpdateGuard<'_, State>,
         evlh: &LoopHandle<'static, State>,
-    ) {
+    ) -> Option<WlSurface> {
         if self.active_realm == id {
-            return;
+            return None;
         }
         self.ensure_realm(id, workspace_state);
 
@@ -3428,6 +3458,7 @@ impl Shell {
         }
         self.carry_machine_windows(&previous, workspace_state, evlh);
         tracing::info!(from = previous, to = id, "realm switched");
+        self.realm_activation.switched(id)
     }
 
     /// Move the machine-plane windows in realm `from` into the one on screen,
@@ -3804,6 +3835,7 @@ impl Shell {
             pending_windows: Vec::new(),
             pending_layers: Vec::new(),
             pending_activations: HashMap::new(),
+            realm_activation: RealmActivation::default(),
             override_redirect_windows: Vec::new(),
             session_lock: None,
             previous_workspace_idx: None,
@@ -12764,6 +12796,34 @@ mod remove_desktop_tests;
 
 #[cfg(test)]
 mod realm_transition_tests {
+
+    /// Play asked to come forward before the switch to its workspace landed; the
+    /// host windows carried in must not keep focus and stay drawn over it.
+    #[test]
+    fn a_window_that_asked_first_comes_forward_when_its_workspace_does() {
+        let mut activation = super::RealmActivation::default();
+        activation.ask("play", "games".to_string());
+        assert_eq!(activation.switched("games"), Some("play"));
+        assert_eq!(activation.switched("games"), None, "once only");
+    }
+
+    /// A switch somewhere else means the user went elsewhere: the request is dropped.
+    #[test]
+    fn a_switch_elsewhere_forgets_the_request() {
+        let mut activation = super::RealmActivation::default();
+        activation.ask("play", "games".to_string());
+        assert_eq!(activation.switched("work"), None);
+        assert_eq!(activation.switched("games"), None);
+    }
+
+    /// The newest request wins.
+    #[test]
+    fn a_later_request_replaces_an_earlier_one() {
+        let mut activation = super::RealmActivation::default();
+        activation.ask("play", "games".to_string());
+        activation.ask("notes", "work".to_string());
+        assert_eq!(activation.switched("work"), Some("notes"));
+    }
 
     /// A workspace the user disables goes dormant: the registry still lists
     /// it, so its realm and the desktops in it survive and are there when it

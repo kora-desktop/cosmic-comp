@@ -1143,8 +1143,19 @@ impl State {
     /// Lives here rather than on `Shell` because swapping which realm is
     /// exposed touches the workspace-protocol state, which `Common` owns.
     fn apply_workspace_registry(&mut self, registry: crate::dbus::workspaces::Registry) {
+        // A window that asked to come forward before its workspace was on screen.
+        if let Some(surface) = self.switch_to_registry_realm(registry) {
+            self.activate_surface(&surface, None);
+        }
+    }
+
+    fn switch_to_registry_realm(
+        &mut self,
+        registry: crate::dbus::workspaces::Registry,
+    ) -> Option<WlSurface> {
         use crate::dbus::workspaces::Registry;
 
+        let mut activation = None;
         let mut shell = self.common.shell.write();
         match registry {
             Registry::Absent => {
@@ -1184,7 +1195,7 @@ impl State {
                     let mut guard = self.common.workspace_state.update();
                     let animation = self.common.config.cosmic_conf.workspace_transition;
                     let initial = shell.take_initial_realm_activation();
-                    shell.switch_realm(
+                    activation = shell.switch_realm(
                         &active.id,
                         (!initial).then_some(animation),
                         &mut guard,
@@ -1237,6 +1248,7 @@ impl State {
                 }
             }
         }
+        activation
     }
 
     pub fn new_client_state(&self) -> ClientState {
