@@ -57,6 +57,12 @@ pub fn of_x11(surface: &smithay::xwayland::X11Surface) -> Option<String> {
     of_client(&surface.wl_surface()?.client()?)
 }
 
+/// The realm a window asking to come forward waits in until it is on screen: its client's
+/// workspace, when that is not `active`. A machine-plane window is in every realm.
+pub fn waits_in_realm(client: Option<String>, active: &str) -> Option<String> {
+    client.filter(|realm| realm != active)
+}
+
 /// The workspace a pid belongs to, or `None` for machine-plane.
 pub fn of_pid(pid: u32) -> Option<String> {
     let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
@@ -285,5 +291,17 @@ mod tests {
             .find_map(|segment| segment.strip_prefix("workspace-")?.strip_suffix(".slice"));
         assert_eq!(of_pid(std::process::id()).as_deref(), workspace);
         assert_eq!(of_pid(u32::MAX), None);
+    }
+
+    /// Play asks to come forward, with or without a token, while another workspace is on
+    /// screen: it waits for its own. A window already on screen, or on the machine, does not.
+    #[test]
+    fn a_window_off_screen_waits_in_its_own_realm() {
+        assert_eq!(
+            waits_in_realm(Some("games".into()), "work"),
+            Some("games".into())
+        );
+        assert_eq!(waits_in_realm(Some("work".into()), "work"), None);
+        assert_eq!(waits_in_realm(None, "work"), None);
     }
 }

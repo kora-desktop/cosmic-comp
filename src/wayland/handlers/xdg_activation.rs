@@ -389,16 +389,19 @@ impl State {
                 let mut workspace_guard = self.common.workspace_state.update();
                 workspace_guard.add_workspace_state(&workspace, WState::Urgent);
             }
-        } else if let Some((activation_key, context)) = pending_activation {
-            // A window in a workspace off screen comes forward once the switch there lands.
-            if let Some(realm) = surface
+        } else {
+            // A window in a workspace off screen comes forward once the switch there lands,
+            // whatever its token: a window asking with one of its own can beat the switch too.
+            let client = surface
                 .client()
-                .and_then(|client| crate::workspace_tag::of_client(&client))
-                .filter(|realm| *realm != shell.active_realm())
+                .and_then(|client| crate::workspace_tag::of_client(&client));
+            if let Some(realm) = crate::workspace_tag::waits_in_realm(client, shell.active_realm())
             {
                 shell.realm_activation.ask(surface.clone(), realm);
             }
-            shell.pending_activations.insert(activation_key, context);
+            if let Some((activation_key, context)) = pending_activation {
+                shell.pending_activations.insert(activation_key, context);
+            }
         };
     }
 }
