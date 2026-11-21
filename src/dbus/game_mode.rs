@@ -38,6 +38,7 @@ use tracing::{debug, info, trace, warn};
 use zbus::{interface, object_server::SignalEmitter};
 
 use crate::logger::GAMING_TARGET;
+use crate::shell::focus::FocusTarget;
 use crate::shell::focus::target::KeyboardFocusTarget;
 use crate::shell::{CosmicSurface, GameMode, SeatExt, Shell, WorkspaceDelta};
 use crate::state::State;
@@ -3234,6 +3235,23 @@ pub fn is_game_child(base: &CosmicSurface, app_id: u32, surface: &CosmicSurface)
         || (base_window.is_some() && surface.transient_for() == base_window)
 }
 
+/// Whether a window on the game's desktop draws over the game. The game's own windows always do.
+/// An app opened over the launcher does until the launcher is focused after it, as a click on
+/// it or a request to bring it forward does; one carried onto the desktop and never focused
+/// there stays behind. Positions count back from the latest focus on that desktop.
+fn draws_over_game(
+    own: bool,
+    opened_over_launcher: bool,
+    launcher_at: Option<usize>,
+    window_at: Option<usize>,
+) -> bool {
+    own || opened_over_launcher
+        && match (launcher_at, window_at) {
+            (None, _) => true,
+            (Some(launcher), window) => window.is_some_and(|window| window < launcher),
+        }
+}
+
 fn resolve_game_children(shell: &Shell, base: &CosmicSurface, app_id: u32) -> Vec<CosmicSurface> {
     let Some(ws) = shell
         .workspaces()
@@ -3242,11 +3260,24 @@ fn resolve_game_children(shell: &Shell, base: &CosmicSurface, app_id: u32) -> Ve
     else {
         return Vec::new();
     };
+    let stack = ws.focus_stack.get(shell.seats.last_active());
+    let focused_at = |surface: &CosmicSurface| {
+        stack.iter().position(|target| match target {
+            FocusTarget::Fullscreen(fullscreen) => fullscreen == surface,
+            FocusTarget::Window(mapped) => mapped.windows().any(|(window, _)| &window == surface),
+        })
+    };
+    let launcher_at = focused_at(base);
     let mut children: Vec<CosmicSurface> = ws
         .mapped()
         .map(|mapped| mapped.active_window())
         .filter(|surface| {
-            is_game_child(base, app_id, surface) || shell.shows_over_launcher(surface)
+            draws_over_game(
+                is_game_child(base, app_id, surface),
+                shell.shows_over_launcher(surface),
+                launcher_at,
+                focused_at(surface),
+            )
         })
         .collect();
     // Apply the session manager's base-layer priority: a window whose app id
@@ -3342,6 +3373,33 @@ fn reported_focus(focused: u32, on_screen: bool, shown: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_click_on_the_launcher_puts_it_over_the_apps_carried_onto_its_desktop() {
+        // Apps carried in by the switch, never focused there; the launcher then asked forward.
+        assert!(!draws_over_game(false, true, Some(0), None));
+        // An app focused, then the launcher clicked.
+        assert!(!draws_over_game(false, true, Some(0), Some(1)));
+    }
+
+    #[test]
+    fn an_app_opened_over_the_launcher_draws_over_it_while_it_is_the_later_focus() {
+        assert!(draws_over_game(false, true, Some(1), Some(0)));
+        assert!(
+            draws_over_game(false, true, None, None),
+            "the launcher never focused"
+        );
+    }
+
+    #[test]
+    fn the_game_s_own_windows_draw_over_it_whatever_was_focused() {
+        assert!(draws_over_game(true, false, Some(0), None));
+        assert!(draws_over_game(true, false, Some(0), Some(3)));
+        assert!(
+            !draws_over_game(false, false, None, Some(0)),
+            "an unrelated window"
+        );
+    }
 
     #[test]
     fn steam_s_fixed_size_updater_is_not_big_picture() {
