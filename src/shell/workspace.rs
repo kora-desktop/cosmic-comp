@@ -1362,6 +1362,8 @@ impl Workspace {
     /// targets (XWayland CEF/Chromium login windows advertising _GTK_FRAME_EXTENTS,
     /// and CSD shadow insets), so hit-testing against it would be offset from what
     /// the user sees.
+    ///
+    /// `None` outside the child's bbox, which the layers also check before asking a window.
     fn controlled_child_at(
         &self,
         _view: GameModeView<'_>,
@@ -1373,10 +1375,8 @@ impl Workspace {
             .find(|m| m.windows().any(|(surface, _)| &surface == child))?;
         let geometry = self.element_geometry(mapped)?;
         let render_origin = geometry.loc - mapped.geometry().loc.as_local();
-        Some((
-            mapped,
-            location.to_local(&self.output) - render_origin.to_f64(),
-        ))
+        let relative = location.to_local(&self.output) - render_origin.to_f64();
+        child_holds(mapped.bbox(), relative.as_logical()).then_some((mapped, relative))
     }
 
     /// Maps a point in output-local space into the controlled surface's own
@@ -3532,6 +3532,31 @@ fn centered_fixed(
             size,
         ),
         _ => output,
+    }
+}
+
+/// Whether a window game mode draws over its game holds `relative`, a point from its render
+/// origin: only inside its bbox, whatever its own hit-test claims beyond it.
+fn child_holds(bbox: Rectangle<i32, Logical>, relative: Point<f64, Logical>) -> bool {
+    bbox.to_f64().contains(relative)
+}
+
+#[cfg(test)]
+mod game_child_tests {
+    use super::*;
+
+    /// With an app raised over the launcher, clicks anywhere on the launcher went to the app.
+    /// Measured on a laptop: an 858x552 window at (224,121), with a 40 px bar, whose resize
+    /// border reached past the screen; the launcher's close button at (1328,160).
+    #[test]
+    fn a_click_beside_a_window_over_the_launcher_falls_through_to_it() {
+        let bbox = Rectangle::new((-10, -10).into(), (878, 612).into());
+        let at = |x: f64, y: f64| child_holds(bbox, Point::from((x - 224.0, y - 121.0)));
+        assert!(!at(1328.0, 160.0), "the launcher's close button");
+        assert!(!at(1536.0, 672.0), "the launcher's backdrop");
+        assert!(at(500.0, 140.0), "the window's bar");
+        assert!(at(1090.0, 400.0), "its right resize border");
+        assert!(!at(1093.0, 400.0), "just past it");
     }
 }
 
