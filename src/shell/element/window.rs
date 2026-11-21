@@ -272,6 +272,15 @@ impl Focus {
                 if loc.x >= 0 && loc.x < geo.size.w && loc.y >= 0 && loc.y < height {
                     return Some(Focus::Header);
                 }
+                // Not every caller first checks the element's bbox: game mode's hit-test of the
+                // windows it draws over the game does not.
+                if !(loc.x >= -RESIZE_BORDER
+                    && loc.x < geo.size.w + RESIZE_BORDER
+                    && loc.y >= -RESIZE_BORDER
+                    && loc.y < height + geo.size.h + RESIZE_BORDER)
+                {
+                    return None;
+                }
                 height
             }
         };
@@ -3193,6 +3202,28 @@ mod tests {
         assert_eq!(hit(400.0, -1.0), Some(Focus::ResizeTop));
         assert_eq!(hit(400.0, 640.0), Some(Focus::ResizeBottom));
         assert_eq!(hit(400.0, 639.0), None);
+    }
+
+    /// Clicks on the launcher went to an app drawn over it, as a resize of the app's edge.
+    #[test]
+    fn a_bar_header_s_resize_borders_hug_the_window() {
+        let geo = Rectangle::new((0, 0).into(), (800, 600).into());
+        let hit = |x, y| Focus::under_geometry(geo, HeaderBand::Bar(40), Point::from((x, y)));
+        assert_eq!(hit(-10.0, 300.0), Some(Focus::ResizeLeft));
+        assert_eq!(hit(809.0, 300.0), Some(Focus::ResizeRight));
+        assert_eq!(hit(400.0, -10.0), Some(Focus::ResizeTop));
+        assert_eq!(hit(400.0, 649.0), Some(Focus::ResizeBottom));
+        assert_eq!(hit(809.0, 649.0), Some(Focus::ResizeBottomRight));
+        assert_eq!(hit(-10.1, 300.0), None);
+        assert_eq!(hit(810.0, 300.0), None);
+        assert_eq!(hit(400.0, -10.1), None);
+        assert_eq!(hit(400.0, 650.0), None);
+        assert_eq!(hit(1104.0, 39.0), None, "far right of the bar");
+        assert_eq!(hit(1312.0, 551.0), None, "far right of the window");
+        // A window without a bar of its own.
+        let bare = |x, y| Focus::under_geometry(geo, HeaderBand::Bar(0), Point::from((x, y)));
+        assert_eq!(bare(805.0, 10.0), Some(Focus::ResizeRight));
+        assert_eq!(bare(1200.0, 10.0), None);
     }
 
     #[test]
