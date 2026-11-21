@@ -1034,6 +1034,15 @@ impl State {
                                     let is_layer = surface.as_ref().is_some_and(|s| {
                                         crate::wayland::protocols::layer_surface_dismiss::is_layer_chrome(&output, s)
                                     });
+                                    trace!(
+                                        surface = ?id,
+                                        layer = ?surface.as_ref().and_then(|s| {
+                                            smithay::desktop::layer_map_for_output(&output)
+                                                .layer_for_surface(s, WindowSurfaceType::ALL)
+                                                .map(|layer| layer.namespace().to_owned())
+                                        }),
+                                        "pointer press lands on"
+                                    );
                                     (id, is_layer)
                                 }
                                 None => (None, false),
@@ -1069,7 +1078,11 @@ impl State {
                     // We test for any matching surface type here but always use the root
                     // (in case of a window the toplevel) surface for the focus.
                     // see: https://gitlab.freedesktop.org/wayland/wayland/-/issues/294
-                    if !seat.get_pointer().unwrap().is_grabbed() {
+                    let grabbed = seat.get_pointer().unwrap().is_grabbed();
+                    if grabbed {
+                        trace!("pointer press inside a grab keeps the focus");
+                    }
+                    if !grabbed {
                         let output = seat.active_output();
 
                         let global_position =
@@ -1078,6 +1091,7 @@ impl State {
                             let shell = self.common.shell.read();
                             State::element_under(global_position, &output, &shell, &seat)
                         };
+                        trace!(target = ?under, "pointer press focuses");
 
                         // Compositor-driven edge resize for the agentos-chat-panel
                         // side panel: a left press within a few px of its inner
